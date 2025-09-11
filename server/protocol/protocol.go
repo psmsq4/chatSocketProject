@@ -81,13 +81,16 @@ type ViewAvailableChatRoomResPacket struct {
 }
 
 type ViewUserJoinChatRoomReqPacket struct {
+	UserID []byte
 }
 
 type ViewUserJoinChatRoomResPacket struct {
+	ErrorCode int16
 }
 
 type TransferMessageReqPacket struct {
 	ChatRoomID int16
+	TimeChat   []byte
 	Message    []byte
 }
 
@@ -99,7 +102,7 @@ type BroadcastMessagePacket struct {
 	MessageSequence int32
 	Message         []byte
 	TimeChat        []byte // 16 byte (static)
-	Sender          []byte
+	UserName        []byte
 } // req, res 없이 udp처럼 일방적인 패킷으로 구현
 
 type RenewChatLogReqPacket struct {
@@ -111,5 +114,5 @@ type RenewChatLogResPacket struct {
 	MessageSequence int32
 	Message         []byte
 	TimeChat        []byte
-	Sender          []byte
+	UserName        []byte
 } // 상기 패킷에 대한 응답 패킷

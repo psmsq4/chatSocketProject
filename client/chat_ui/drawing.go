@@ -21,14 +21,12 @@ var mutex sync.Mutex
 var chatLogCond sync.Cond
 var msgInputCond sync.Cond
 
-func DrawFrame(chatRoomID int16, messageListener chan string, chatLogFileDescriptor *os.File) {
+func DrawFrame(chatRoomID int16, messageListener chan string, chatLogBuffer []string) {
 	var msg string
 	chatLogCond.L = &mutex
 	msgInputCond.L = &mutex
 
 	chatLog := make([]byte, 1024)
-
-	// filename := fmt.Sprintf("chatlog_%d", chatRoomID)
 
 	cmd := exec.Command("clear")
 	cmd.Stdout = os.Stdout
@@ -87,50 +85,33 @@ func DrawFrame(chatRoomID int16, messageListener chan string, chatLogFileDescrip
 
 		msg = <-messageListener
 
-		// nextLine += 2
-		chatLog = make([]byte, 1024*10)
-
 		if strings.Compare(msg, "quit") == 0 {
 			break
 		} else if strings.Compare(msg, "/c up") == 0 {
-			chatLogFileDescriptor.ReadAt(chatLog, 0)
 			startRow--
-			chatLog = []byte(ExtractValidVolumnChatlog(&startRow, height_chatLogArea, string(chatLog)))
+			chatLog = []byte(ExtractValidVolumnChatlog(&startRow, height_chatLogArea, chatLogBuffer))
 		} else if strings.Compare(msg, "/c down") == 0 {
-			chatLogFileDescriptor.ReadAt(chatLog, 0)
 			startRow++
-			chatLog = []byte(ExtractValidVolumnChatlog(&startRow, height_chatLogArea, string(chatLog)))
+			chatLog = []byte(ExtractValidVolumnChatlog(&startRow, height_chatLogArea, chatLogBuffer))
 		} else {
-			chatLogFileDescriptor.WriteString(msg)
-			chatLogFileDescriptor.ReadAt(chatLog, 0)
+			chatLogBuffer = append(chatLogBuffer, msg)
 
 			startRow = -1
 
-			chatLog = []byte(ExtractValidVolumnChatlog(&startRow, height_chatLogArea, string(chatLog)))
+			chatLog = []byte(ExtractValidVolumnChatlog(&startRow, height_chatLogArea, chatLogBuffer))
 		}
 	}
 }
 
-func ExtractValidVolumnChatlog(startRow *int, chatLogAreaHeight int, originChatlog string) string {
+func ExtractValidVolumnChatlog(startRow *int, chatLogAreaHeight int, chatLogBuffer []string) string {
 	/*
-		서버로부터 메세지를 받으면 game.go에서는 아래와 같이 메세지를 후처리한다.
-		broadcastMessageFormatString := fmt.Sprintf(" %s  |  %s\n [%d]: %s\n\n", sender, time_chat, broadcastMessage.MessageSequence, message)
-		_MessageListener <- broadcastMessageFormatString
+		chatLogBuffer의 메세지 하나는 라인 4개를 차지함.
 	*/
-	targetStrings := make([]string, 0)
 
-	startIndex := 0
-	chatLogAreaHeight = chatLogAreaHeight - 2 // 상하 테두리 제외
+	chatLogAreaHeight = (chatLogAreaHeight - 2) / 4 // 상하 테두리 제외 + 4로 나누어서 몇 개의 메세지를 출력할 수 있는지 계산.
 
-	for currentIndex, char := range originChatlog {
-		if char == '\n' {
-			targetStrings = append(targetStrings, originChatlog[startIndex:currentIndex])
-			startIndex = currentIndex + 1
-		}
-	}
-
-	if *startRow < 0 { // /c up 시 시작 인덱스가 0보다 작아지는 경우 또는 새 메세지가 도착했을 때
-		if len(targetStrings)-chatLogAreaHeight < 0 {
+	if *startRow < 0 { // /c up 시 시작 인덱스가 0보다 작아지는 경우 또는 새 메세지가 도착했을 때, 마지막 채팅 기록으로 이동
+		if len(chatLogBuffer)-chatLogAreaHeight < 0 {
 			*startRow = 0
 		} else {
 			/* 전체 메세지 개수가 100개라 가정하자.
@@ -139,19 +120,20 @@ func ExtractValidVolumnChatlog(startRow *int, chatLogAreaHeight int, originChatl
 			 * 따라서 시작 인덱스를 99로 설정해야 한다.
 			 * 이는 높이가 n이어도 성립한다.
 			 */
-			*startRow = len(targetStrings) - chatLogAreaHeight
+			*startRow = len(chatLogBuffer) - chatLogAreaHeight
 		}
-	} else if *startRow > (len(targetStrings) - 3) {
-		*startRow = len(targetStrings) - 3
+	} else if *startRow > (len(chatLogBuffer)-1) && len(chatLogBuffer) > 1 {
+		// /c down 시 시작 인덱스가 마지막 채팅 기록보다 큰 경우 마지막 채팅 기록으로 이동
+		*startRow = len(chatLogBuffer) - 1
 	}
 
 	endRow := *startRow + chatLogAreaHeight
-	if endRow > len(targetStrings) {
-		endRow = len(targetStrings)
+	if endRow > len(chatLogBuffer) {
+		endRow = len(chatLogBuffer)
 	}
 
-	convertedString := strings.Join(targetStrings[*startRow:endRow], "\n") // go도 python처럼 끝인덱스는 포함하지 않는다.
-	targetStrings = nil
+	convertedString := strings.Join(chatLogBuffer[*startRow:endRow], "\n") // go도 python처럼 끝인덱스는 포함하지 않는다.
+	chatLogBuffer = nil
 	return convertedString
 }
 

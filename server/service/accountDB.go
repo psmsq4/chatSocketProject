@@ -62,7 +62,7 @@ func InitMysql(dbConfig DbConfig) error {
 user_id를 기반으로 users 테이블에서 user를 가지고옴
 */
 func LoadAccount(strUserId string) (Account, error) {
-	stmt, err := _mysqlClient.Prepare("select id, user_id, user_name, user_pw from USERS where user_id = ?")
+	stmt, err := _mysqlClient.Prepare("select USER_ID, USER_NAME, USER_PW from USERS where USER_ID = ?")
 	if err != nil {
 		return Account{}, err
 	}
@@ -70,15 +70,13 @@ func LoadAccount(strUserId string) (Account, error) {
 	defer stmt.Close()
 
 	row := stmt.QueryRow(strUserId)
-	var Id int64
 	var userId, userName, userPw string
-	err = row.Scan(&Id, &userId, &userName, &userPw)
+	err = row.Scan(&userId, &userName, &userPw)
 	if err != nil && err == sql.ErrNoRows {
 		return Account{}, err
 	}
 
 	return Account{
-		ID:       Id,
 		UserID:   userId,
 		UserNAME: userName,
 		UserPW:   userPw,
@@ -151,14 +149,7 @@ func JoinAccount(userID, userPW, userNAME []byte) int16 {
 채팅방 추가
 */
 func CreateNewChatRoom(userID string, chatRoomName []byte, chatRoomPW []byte) (int16, int16) {
-
-	account, err := LoadAccount(string(userID))
-	if err != nil {
-		fmt.Println("b")
-	}
-	SurrogateKeyFromUserID := account.ID
-
-	stmt, err := _mysqlClient.Prepare("insert into CHAT_ROOM (CREATOR_ID, CHAT_ROOM_NAME, CHAT_ROOM_PW) values(?, ?, ?)")
+	stmt, err := _mysqlClient.Prepare("insert into CHAT_ROOM (USER_ID, CHAT_ROOM_NAME, CHAT_ROOM_PW) values(?, ?, ?)")
 	if err != nil {
 		fmt.Println("c")
 		return -1, errorcode.ERROR_CODE_FAIL_CREATE_NEW_CHATROOM
@@ -166,9 +157,9 @@ func CreateNewChatRoom(userID string, chatRoomName []byte, chatRoomPW []byte) (i
 
 	defer stmt.Close()
 
-	fmt.Println(SurrogateKeyFromUserID, string(chatRoomName), string(chatRoomPW))
+	fmt.Println(userID, string(chatRoomName), string(chatRoomPW))
 
-	result, err := stmt.Exec(SurrogateKeyFromUserID, string(chatRoomName), string(chatRoomPW))
+	result, err := stmt.Exec(userID, string(chatRoomName), string(chatRoomPW))
 	if err != nil {
 		fmt.Println("d")
 		return -1, errorcode.ERROR_CODE_FAIL_CREATE_NEW_CHATROOM
@@ -179,47 +170,58 @@ func CreateNewChatRoom(userID string, chatRoomName []byte, chatRoomPW []byte) (i
 }
 
 /* 메세지 저장 */
-func StoreMessageToDB(sessionUniqueID uint64, chatRoomID int16, message string) (int32, string, string, int16) {
-	stmt, err := _mysqlClient.Prepare("INSERT INTO MESSAGE_TRANSACTION (CHAT_ROOM_ID, MESSAGE, SENDER) VALUES (?, ?, ?)")
+func StoreMessageToDB(sessionUniqueID uint64, chatRoomID int16, message string, timeChat string) (int32, string, int16) {
+	stmt, err := _mysqlClient.Prepare("INSERT INTO MESSAGE_TRANSACTION (CHAT_ROOM_ID, MESSAGE, USER_ID, TIME_CHAT) VALUES (?, ?, ?, ?)")
 	if err != nil {
 		fmt.Println("StoreMessageToDB INSERT QUERY_PREPARE ERROR")
-		return -1, "", "", errorcode.ERROR_CODE_FAIL_TRANSFER_MESSAGE
+		return -1, "", errorcode.ERROR_CODE_FAIL_TRANSFER_MESSAGE
 	}
 	defer stmt.Close()
 
 	userID := bytes.Trim(LoadUserInfo(sessionUniqueID, 0).UserID, "\x00")
-	userAccount, _ := LoadAccount(string(userID))
 
-	result, err := stmt.Exec(strconv.Itoa(int(chatRoomID)), message, strconv.Itoa(int(userAccount.ID)))
-	fmt.Println(strconv.Itoa(int(chatRoomID)), " ", message, " ", strconv.Itoa(int(userAccount.ID)))
-	if err != nil && result != nil {
-		fmt.Println("StoreMessageToDB INSERT EXEC ERROR", err)
-		return -1, "", "", errorcode.ERROR_CODE_FAIL_TRANSFER_MESSAGE
-	}
-
-	var message_sequence int32
-	var time string
-	var user_name string
-
-	stmt, err = _mysqlClient.Prepare(`
-		SELECT T1.MESSAGE_ID, T1.TIME_CHAT, T2.USER_NAME 
-		FROM MESSAGE_TRANSACTION T1
-		INNER JOIN USERS T2
-			ON T1.SENDER = T2.ID
-		WHERE CHAT_ROOM_ID = ? AND MESSAGE = ? AND SENDER = ?`)
+	_, err = stmt.Exec(strconv.Itoa(int(chatRoomID)), message, userID, timeChat)
+	fmt.Println(strconv.Itoa(int(chatRoomID)), " ", message, " ", userID)
 	if err != nil {
-		fmt.Println("StoreMessageToDB SELECT QUERY_PREPARE ERROR (MESSAGE_ID)")
+		fmt.Println("StoreMessageToDB INSERT EXEC ERROR", err)
+		return -1, "", errorcode.ERROR_CODE_FAIL_TRANSFER_MESSAGE
 	}
-	row := stmt.QueryRow(strconv.Itoa(int(chatRoomID)), message, strconv.Itoa(int(userAccount.ID)))
 
-	row.Scan(&message_sequence, &time, &user_name)
-	// fmt.Println(unsafe.Sizeof(time))
+	stmt2, err := _mysqlClient.Prepare("SELECT MAX(MESSAGE_ID) FROM MESSAGE_TRANSACTION WHERE CHAT_ROOM_ID = ?")
+	if err != nil {
+		fmt.Println("StoreMessageToDB SELECT QUERY_PREPARE ERROR")
+		return -1, "", errorcode.ERROR_CODE_FAIL_TRANSFER_MESSAGE
+	}
+	defer stmt2.Close() // 두 번째 stmt도 Close 필요
 
-	return message_sequence, time, user_name, errorcode.ERROR_CODE_NONE
+	row := stmt2.QueryRow(strconv.Itoa(int(chatRoomID)))
+	var lastInsertID int32
+	err = row.Scan(&lastInsertID)
+	if err != nil {
+		fmt.Println("StoreMessageToDB SELECT EXEC ERROR")
+		return -1, "", errorcode.ERROR_CODE_FAIL_TRANSFER_MESSAGE
+	}
+
+	stmt3, err := _mysqlClient.Prepare("SELECT USER_NAME FROM USERS WHERE USER_ID = ?")
+	if err != nil {
+		fmt.Println("StoreMessageToDB SELECT QUERY_PREPARE ERROR")
+		return -1, "", errorcode.ERROR_CODE_FAIL_TRANSFER_MESSAGE
+	}
+	defer stmt3.Close() // 세 번째 stmt도 Close 필요
+
+	row = stmt3.QueryRow(userID)
+	var userName string
+	err = row.Scan(&userName)
+	if err != nil {
+		fmt.Println("StoreMessageToDB SELECT EXEC ERROR")
+		return -1, "", errorcode.ERROR_CODE_FAIL_TRANSFER_MESSAGE
+	}
+
+	return int32(lastInsertID), userName, errorcode.ERROR_CODE_NONE
 }
 
 func InsertAttendanceInformation(chatRoomID int16, userID string, auth string) {
-	stmt, err := _mysqlClient.Prepare("INSERT INTO CHAT_ATTENDANCE (CHAT_ROOM_ID, ID, AUTHORITY_CODE) VALUES (?, ?, ?)")
+	stmt, err := _mysqlClient.Prepare("INSERT INTO CHAT_USER_ATTENDANCE (CHAT_ROOM_ID, USER_ID, AUTHORITY_CODE) VALUES (?, ?, ?)")
 	if err != nil {
 		fmt.Println("InsertAttendanceInformation INSERT QUREY_PREPARE ERROR")
 	}
@@ -233,7 +235,7 @@ func SelectChatRoomInfo() (*sql.Rows, int) {
 		`SELECT T1.CHAT_ROOM_ID, T1.CREATE_DATE, T2.USER_NAME, T1.CHAT_ROOM_NAME 
 		 FROM CHAT_ROOM T1
 		 INNER JOIN USERS T2
-		 	ON T1.CREATOR_ID = T2.ID`)
+		 	ON T1.USER_ID = T2.USER_ID`)
 	if err != nil {
 		fmt.Println("SelectChatRoomInfo SELECT QUERY_PREPARE ERROR")
 		return nil, errorcode.ERROR_CODE_FAIL_VIEW_AVAILABLE_CHATROOM

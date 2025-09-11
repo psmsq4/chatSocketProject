@@ -12,7 +12,7 @@ func ProcessPacketTransferMessage(sessionUniqueId uint64, sessionId int32, bodyS
 	// 현재 상태 : 임의의 클라이언트가 서버로 채팅방ID와 메세지를 보낸 상황
 	// [서버 측 작업]
 	//	- 1. 패킷을 구조체에 저장함. 메세지는 bytes.Trim()으로 공백 제거
-	//	- 2. 해당 구조체 정보를 DB에 저장함
+	//	- 2. 해당 구조체 정보를 DB에 저장함 -> message, timeChat, chatRoomID는 이미 알고 있으므로 userID와 messageID만 StoreMessageToDB에서 반환 받으면 됨.
 	//	- 3. 현재 채팅방에 접속해 있는 클라이언트 대상으로 해당 메세지를 전송함. (송신자에게도 전송)
 	//	※ 전제조건
 	//	: 채팅방에 접속해있는 유저를 파악할 수 있도록 세션 정보(RedisUser)에 ChatRoomID 필드가 추가되어야 함.
@@ -29,9 +29,10 @@ func ProcessPacketTransferMessage(sessionUniqueId uint64, sessionId int32, bodyS
 	// fmt.Println(string(bytes.Trim(transferMessage.Message, "\x00")))
 
 	chatRoomID := transferMessage.ChatRoomID
+	timeChat := bytes.Trim(transferMessage.TimeChat, "\x00")
 	message := bytes.Trim(transferMessage.Message, "\x00")
 
-	messageID, time, user_name, err := service.StoreMessageToDB(sessionUniqueId, chatRoomID, string(message))
+	messageID, userName, err := service.StoreMessageToDB(sessionUniqueId, chatRoomID, string(message), string(timeChat))
 
 	listOfLiveUsers := service.RetrieveUsersFromCID(chatRoomID) // chatRoomID를 갖고 있는 세션의 sessionUniqueID들의 배열을 반환한다.
 	// fmt.Println(listOfLiveUsers)
@@ -42,13 +43,13 @@ func ProcessPacketTransferMessage(sessionUniqueId uint64, sessionId int32, bodyS
 	BroadcastMessage := protocol.BroadcastMessagePacket{
 		Message:  make([]byte, protocol.MAX_CHAT_MESSAGE_BYTE_LENGTH),
 		TimeChat: make([]byte, protocol.MAX_CHAT_TIME_BYTE_LENGTH),
-		Sender:   make([]byte, protocol.MAX_USER_NAME_BYTE_LENGTH),
+		UserName: make([]byte, protocol.MAX_USER_NAME_BYTE_LENGTH),
 	}
 
 	BroadcastMessage.MessageSequence = messageID
 	copy(BroadcastMessage.Message[:], message)
-	copy(BroadcastMessage.TimeChat[:], []byte(time))
-	copy(BroadcastMessage.Sender[:], []byte(user_name))
+	copy(BroadcastMessage.TimeChat[:], []byte(timeChat))
+	copy(BroadcastMessage.UserName[:], []byte(userName))
 
 	SendTransferMessageResult(sessionUniqueId, sessionId, err)
 	BroadcastMessageToLiveUsers(listOfLiveUsers, &BroadcastMessage)

@@ -21,7 +21,7 @@ const (
 	MAX_CHAT_MESSAGE_BYTE_LENGTH = 512
 	MAX_CHAT_NAME_BYTE_LENGTH    = 20
 	MAX_CHAT_PW_BYTE_LENGTH      = 20
-	MAX_CHAT_TIME_BYTE_LENGTH    = 20
+	MAX_CHAT_TIME_BYTE_LENGTH    = 24
 )
 
 var _packetHeaderSize int16
@@ -299,28 +299,34 @@ func (createNewChatRes *CreateNewChatRoomResPacket) Decoding(bodyData []byte) bo
 }
 
 func (transferMessageReq *TransferMessageReqPacket) EncodingPacket() ([]byte, int16) {
-	totalSize := _packetHeaderSize + network.BYTE_OF_CHATROOM_ID + MAX_CHAT_MESSAGE_BYTE_LENGTH
+	totalSize := _packetHeaderSize + network.BYTE_OF_CHATROOM_ID + MAX_CHAT_TIME_BYTE_LENGTH + MAX_CHAT_MESSAGE_BYTE_LENGTH
 
 	sendBuf := make([]byte, totalSize)
 	writer := network.MakeWrite(sendBuf, true)
 
 	EncodingPacketHeader(&writer, totalSize, PACKET_TRANSFER_MESSAGE_REQ, 0)
 	writer.WriteS16(transferMessageReq.ChatRoomID)
+	writer.WriteBytes(transferMessageReq.TimeChat)
 	writer.WriteBytes(transferMessageReq.Message)
 
 	return sendBuf, totalSize
 }
 
 func (TransferMessageReq *TransferMessageReqPacket) Decoding(bodyData []byte) bool {
-	BodySize := network.BYTE_OF_CHATROOM_ID + MAX_CHAT_MESSAGE_BYTE_LENGTH
+	BodySize := network.BYTE_OF_CHATROOM_ID + MAX_CHAT_TIME_BYTE_LENGTH + MAX_CHAT_MESSAGE_BYTE_LENGTH
 
 	if len(bodyData) != int(BodySize) {
+		fmt.Println("TransferMessageReq Decoding BodySize Error")
 		return false
 	}
 
 	reader := network.MakeReader(bodyData, true)
 	var err error
 	TransferMessageReq.ChatRoomID, err = reader.ReadS16()
+	if err != nil {
+		fmt.Println(err)
+	}
+	TransferMessageReq.TimeChat, err = reader.ReadBytes(MAX_CHAT_TIME_BYTE_LENGTH)
 	if err != nil {
 		fmt.Println(err)
 	}
@@ -371,7 +377,7 @@ func (BroadCastMessage *BroadcastMessagePacket) EncodingPacket() ([]byte, int16)
 	writer.WriteS32(BroadCastMessage.MessageSequence)
 	writer.WriteBytes(BroadCastMessage.Message)
 	writer.WriteBytes(BroadCastMessage.TimeChat)
-	writer.WriteBytes(BroadCastMessage.Sender)
+	writer.WriteBytes(BroadCastMessage.UserName)
 
 	fmt.Println(sendBuf)
 	return sendBuf, totalSize
@@ -401,7 +407,7 @@ func (BroadCastMessage *BroadcastMessagePacket) Decoding(bodyData []byte) bool {
 		fmt.Println("BroadCastMessagePacket Reading Err", err)
 		return false
 	}
-	BroadCastMessage.Sender, err = reader.ReadBytes(MAX_USER_NAME_BYTE_LENGTH)
+	BroadCastMessage.UserName, err = reader.ReadBytes(MAX_USER_NAME_BYTE_LENGTH)
 	if err != nil {
 		fmt.Println("BroadCastMessagePacket Reading Err", err)
 		return false
@@ -551,7 +557,7 @@ func (RenewChatLogRes *RenewChatLogResPacket) EncodingPacket() ([]byte, int16) {
 	writer.WriteS32(RenewChatLogRes.MessageSequence)
 	writer.WriteBytes(RenewChatLogRes.Message)
 	writer.WriteBytes(RenewChatLogRes.TimeChat)
-	writer.WriteBytes(RenewChatLogRes.Sender)
+	writer.WriteBytes(RenewChatLogRes.UserName)
 
 	return sendBuf, totalSize
 }
@@ -585,7 +591,7 @@ func (RenewChatLogRes *RenewChatLogResPacket) Decoding(bodyData []byte) bool {
 		fmt.Println("RenewChatLogRes Reading Err", err)
 		return false
 	}
-	RenewChatLogRes.Sender, err = reader.ReadBytes(MAX_USER_NAME_BYTE_LENGTH)
+	RenewChatLogRes.UserName, err = reader.ReadBytes(MAX_USER_NAME_BYTE_LENGTH)
 	if err != nil {
 		fmt.Println("RenewChatLogRes Reading Err", err)
 		return false
