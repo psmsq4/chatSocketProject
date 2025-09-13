@@ -2,27 +2,72 @@ package main
 
 import (
 	"bytes"
-	chatui "client/chat_ui"
 	"client/network"
 	"client/protocol"
 	"client/send_request"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
+	"strings"
+	"sync"
 	"time"
 
 	"database/sql"
 
+	ui "client/chat_ui"
+
+	gc "github.com/gbin/goncurses"
 	_ "github.com/mattn/go-sqlite3"
 )
 
-var _MessageListener chan string
-var _sqlite3Client *sql.DB
-var _chatRoomID int16
-var _chatLogBuffer []string
+var (
+	_MessageListener chan string
+	_UIListener      = make(chan string, 1)
+	_ExitListener    = make(chan int16)
+	_sqlite3Client   *sql.DB
+	_chatRoomID      int16
+	_chatLogBuffer   []string
+
+	isGoncursesInitialized = false
+	goncursesMutex         sync.Mutex
+	globalStdscr           *gc.Window
+
+	_userID string
+)
 
 type LifeGameClient struct {
 	PacketChan chan protocol.Packet
+}
+
+func initGoncursesOnce() error {
+	goncursesMutex.Lock()
+	defer goncursesMutex.Unlock()
+
+	if !isGoncursesInitialized {
+		gc.CBreak(true)
+		gc.Cursor(0)
+
+		stdscr, err := gc.Init()
+		if err != nil {
+			return err
+		}
+
+		stdscr.ScrollOk(true)
+
+		if !gc.HasColors() {
+			return fmt.Errorf("This requires a colour capable termial")
+		}
+
+		if err := gc.StartColor(); err != nil {
+			return err
+		}
+
+		globalStdscr = stdscr
+		isGoncursesInitialized = true
+	}
+
+	return nil
 }
 
 func InitSqlite3() {
@@ -48,11 +93,60 @@ func InitSqlite3() {
 	if err != nil {
 		fmt.Println("테이블 생성 오류:", err)
 		return
-	} else {
-		fmt.Println("MESSAGE_LOG 테이블이 성공적으로 생성되었습니다.")
 	}
 
 	_sqlite3Client = db
+}
+
+func DrawGUI() { // goroutine으로 돌아감.
+	connectionResult := <-_MessageListener // network.ConnectServer()로부터 message가 올 때까지 대기
+
+	if strings.Compare(connectionResult, "success") == 0 {
+		if err := initGoncursesOnce(); err != nil { // goncurses library 초기화
+			log.Fatal(err)
+		}
+
+		/* 초기화면 (로그인/회원가입)
+		   -> 로그인 시, 메인화면(채팅방 신규/채팅방 접속/채팅방 조회)
+		      -> 채팅방 신규 등록 -> 신규 채팅방 바로 접속
+			  -> 채팅방 접속 -> 채팅방 목록 중 하나 선택 -> 채팅방 접속
+		   -> 가입 시, 초기화면(로그인/회원가입)
+
+		* 초기화면 & 로그인 화면 & 회원가입 화면 & 메인화면 & 채팅방 등록 & 채팅방 화면 & 채팅방 접속시도 화면 */
+		/* 화면 전환을 어떻게 해야하지?
+		   프로시저에 넣어놓고 프로시저 종료 시 그려진 윈도우들은 모두 defer 될 것이다.
+		   -> 여기에 stdscr.Clear()를 후속타로 날려주고 다른 프로시저를 호출하면 될 것 같다.
+		*/
+		for {
+			switch <-_UIListener {
+			case "Sign In": // 로그인
+				id, pw := ui.DrawLogin(globalStdscr, _UIListener)
+				send_request.SendLogin(id, pw)
+				_userID = id
+				globalStdscr.Refresh()
+			case "BeforeLogin": // 초기화면
+				ui.DrawBeforeLogin(globalStdscr, _UIListener)
+				globalStdscr.Refresh()
+			case "Create Account": // 회원가입
+			case "Exit": // 나가기
+				fallthrough
+			case "AfterLogin": // 로그인 이후 메인화면
+				ui.DrawAfterLogin(globalStdscr, _UIListener, _userID)
+				globalStdscr.Refresh()
+			case "NewChat": // 새 채팅 등록
+				chatname, chatpw := ui.DrawNewChat(globalStdscr, _UIListener)
+				send_request.SendCreateNewChatRoomReq(chatname, chatpw)
+				globalStdscr.Refresh()
+			case "OldChat": // 채팅방 접속 시도
+			case "ChatList": // 채팅 목록 조회
+			case "InChat":
+				ui.DrawChatRoom(globalStdscr, _chatRoomID, _chatLogBuffer, _MessageListener, _ExitListener)
+				globalStdscr.Refresh()
+			}
+		}
+	} else if strings.Compare(connectionResult, "fail") == 0 {
+		return
+	}
 }
 
 func ConnectLifeGameServer() {
@@ -75,13 +169,16 @@ func ConnectLifeGameServer() {
 	}
 	_MessageListener = make(chan string)
 	go client.PacketProcess()
+	go DrawGUI()
 
-	network.ConnectServer(snFunctor)
+	network.ConnectServer(snFunctor, _MessageListener, _UIListener)
 }
 
 func (client *LifeGameClient) PacketProcess() {
 	for {
 		select {
+		case <-_ExitListener:
+			AfterLoginUserOption()
 		case packet := <-client.PacketChan:
 			{
 				bodySize := packet.DataSize
@@ -89,13 +186,10 @@ func (client *LifeGameClient) PacketProcess() {
 				packetId := packet.Id
 
 				if packetId == protocol.PACKET_ID_LOGIN_RES {
-					fmt.Println("Login Response")
 					ProcessPacketLogin(bodySize, bodyData)
 				} else if packetId == protocol.PACKET_ID_JOIN_RES {
-					fmt.Println("Join Response")
 					ProcessPacketJoin(bodySize, bodyData)
 				} else if packetId == protocol.PACKET_CREATE_NEW_CHATROOM_RES {
-					fmt.Println("Create Response")
 					ProcessPacketCreateNewChat(bodySize, bodyData)
 				} else if packetId == protocol.PACKET_TRANSFER_MESSAGE_RES {
 					ProcessPacketTransferMessageRes(bodySize, bodyData)
@@ -213,17 +307,14 @@ func ProcessPacketJoin(bodySize int16, bodyData []byte) {
 	var joinRes protocol.LoginResPacket
 	result := (&joinRes).Decoding(bodyData)
 	if !result {
-		fmt.Println("Join Failed")
 		return
 	}
 
 	if joinRes.ErrorCode != protocol.ERROR_CODE_NONE {
-		fmt.Println("Join Failed")
 		return
 	}
 
-	fmt.Println("Join!")
-	StartMenuProcess()
+	_UIListener <- "BeforeLogin"
 }
 
 func ViewAvailableChatRoom() {
@@ -278,17 +369,15 @@ func ProcessPacketLogin(bodySize int16, bodyData []byte) {
 	var loginRes protocol.LoginResPacket
 	result := (&loginRes).Decoding(bodyData)
 	if !result {
-		fmt.Println("Login Failed")
 		return
 	}
 
 	if loginRes.ErrorCode != protocol.ERROR_CODE_NONE {
-		fmt.Println("Login Failed")
 		return
 	}
 
-	fmt.Println("Login!")
-	AfterLoginUserOption()
+	_UIListener <- "AfterLogin"
+	// AfterLoginUserOption()
 }
 
 func SendPing() {
@@ -302,44 +391,6 @@ func SendPing() {
 		packet, packetSize := pingReq.EncodingPacket()
 		network.SendToServer(packet, packetSize)
 	}
-}
-
-var _userID string
-
-func StartMenuProcess() {
-	var option int8
-	fmt.Println("***** LOGIN MENU *****")
-	fmt.Println("1. 로그인(LOGIN)")
-	fmt.Println("2. 가입(JOIN)")
-	fmt.Print("Option Select: ")
-	fmt.Scanf("%d", &option)
-
-	var userID string
-	var userPW string
-	var userNAME string
-	if option == 1 {
-		fmt.Print("USER ID: ")
-		fmt.Scanf("%s", &userID)
-		fmt.Print("USER PW: ")
-		fmt.Scanf("%s", &userPW)
-
-		fmt.Println("Try Logining...")
-		send_request.SendLogin(userID, userPW) // -> Server로 전송 -> Response 수신 -> packetChan -> ProcessPakcetLogin 실행 -> AfterLoginUserOption 실행
-		_userID = userID
-	} else {
-		fmt.Print("NEW USER ID: ")
-		fmt.Scanf("%s", &userID)
-		fmt.Print("NEW USER PW: ")
-		fmt.Scanf("%s", &userPW)
-		fmt.Print("NEW USER NAME: ")
-		fmt.Scanf("%s", &userNAME)
-		fmt.Println("Try Joining...")
-
-		send_request.SendJoin(userID, userPW, userNAME)
-	}
-	cmd := exec.Command("clear")
-	cmd.Stdout = os.Stdout
-	cmd.Run()
 }
 
 func LoadChatLogBuffer() {
@@ -373,9 +424,9 @@ func ProcessPacketCreateNewChat(bodySize int16, bodyData []byte) {
 	_chatRoomID = createNewChatRoomRes.ChatRoomID
 
 	if errResp == protocol.ERROR_CODE_FAIL_CREATE_NEW_CHATROOM {
-		fmt.Println("Server: FAIL CREATE NEW CHAT ROOM")
+		globalStdscr.Print("Server: FAIL CREATE NEW CHAT ROOM")
+		globalStdscr.Refresh()
 	} else {
-		fmt.Println("Success!")
 		// 이게 실행되면 go client.PacketProcess()가 묶여서 패킷 처리가 불가능해짐
 		// 따라서 UI는 다른 스레드에서 실행시켜야 함.
 
@@ -383,14 +434,12 @@ func ProcessPacketCreateNewChat(bodySize int16, bodyData []byte) {
 		_chatLogBuffer = make([]string, 0)
 		LoadChatLogBuffer()
 
-		go chatui.DrawFrame(_chatRoomID, _MessageListener, _chatLogBuffer)
+		_UIListener <- "InChat"
 	}
 }
 
 func (client *LifeGameClient) OnConnect() {
 	fmt.Println("Connect Chatting Server!")
-
-	StartMenuProcess()
 }
 
 func (client *LifeGameClient) OnReceive(packetData []byte) {

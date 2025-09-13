@@ -19,9 +19,10 @@ type TcpSession struct {
 
 var _clientSession *TcpSession
 
-func ConnectServer(functor SessionNetworkFunctor) {
+func ConnectServer(functor SessionNetworkFunctor, messageListener chan string, UIListener chan string) {
 	conn, err := net.Dial("tcp", "127.0.0.1:8000")
 	if err != nil {
+		messageListener <- "fail"
 		fmt.Println(err)
 		return
 	}
@@ -30,6 +31,8 @@ func ConnectServer(functor SessionNetworkFunctor) {
 		Conn:       conn,
 		NetFunctor: functor,
 	}
+	messageListener <- "success"
+	UIListener <- "BeforeLogin"
 
 	_clientSession.handleToRead()
 }
