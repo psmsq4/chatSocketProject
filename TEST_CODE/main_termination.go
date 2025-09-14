@@ -22,3 +22,4 @@ func main() {
 	fmt.Println("main: 종료 - 자식 goroutine도 강제 종료됨")
 }
 
+

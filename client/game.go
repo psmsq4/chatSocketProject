@@ -24,7 +24,6 @@ import (
 var (
 	_MessageListener chan string
 	_UIListener      = make(chan string, 1)
-	_ExitListener    = make(chan int16)
 	_sqlite3Client   *sql.DB
 	_chatRoomID      int16
 	_chatLogBuffer   []string
@@ -140,7 +139,7 @@ func DrawGUI() { // goroutine으로 돌아감.
 			case "OldChat": // 채팅방 접속 시도
 			case "ChatList": // 채팅 목록 조회
 			case "InChat":
-				ui.DrawChatRoom(globalStdscr, _chatRoomID, _chatLogBuffer, _MessageListener, _ExitListener)
+				ui.DrawChatRoom(globalStdscr, _chatRoomID, _chatLogBuffer, _MessageListener, _UIListener)
 				globalStdscr.Refresh()
 			}
 		}
@@ -177,8 +176,6 @@ func ConnectLifeGameServer() {
 func (client *LifeGameClient) PacketProcess() {
 	for {
 		select {
-		case <-_ExitListener:
-			AfterLoginUserOption()
 		case packet := <-client.PacketChan:
 			{
 				bodySize := packet.DataSize

@@ -16,19 +16,49 @@ const (
 	TNewline = 1
 )
 
-var isChatLogCond = true // 채팅 로그 조건 변수
-var WindowMutex sync.Mutex
+// 전역변수로 상태를 관리하기에는 채팅방이 갱신될 때마다 오염 위험이 있음.
+// 그러나 지역변수로 관리하기에는 함수 매개변수가 더러워짐.
+// claude는 다음과 같이 상태 객체를 정의하고 채팅방이 생성될 때 상태 객체를 생성할 것을 권하고 있음.
+// 내가 보기에도 괜찮은 방법임.
+type ChatUIState struct {
+	WindowMutex             sync.Mutex
+	chatLogCond             sync.Cond
+	msgInputCond            sync.Cond
+	optionCond              sync.Cond
+	wg                      *sync.WaitGroup
+	isChatLogCond           bool
+	isOptionCond            bool
+	killSwitch              bool
+	is_chat_transfer_signal bool
+	backup_message          string
+	chatLog                 string
+}
 
-// var chatTransfermutex sync.Mutex
-var (
-	isOptionCond             = false
-	chatLogCond              sync.Cond
-	msgInputCond             sync.Cond
-	optionCond               sync.Cond
-	_backup_message          string
-	_is_chat_transfer_signal bool
-	killSwitch               = false
-)
+// 아래 프로시저로 상태를 생성함.
+// 이는 채팅방이 소멸할 때 같이 소멸하며 생성될 때 같이 생성됨.
+func NewChatUIState() *ChatUIState {
+	// Go에서 &ChatUIState{}는 ChatUIState 구조체의 인스턴스를 힙에 할당하고,
+	// 그 주소값(포인터)을 반환한다.
+	// 만약 state := ChatUIState{}처럼 값으로 선언하면 스택에 할당될 수 있지만,
+	// &를 붙여 포인터로 생성하면 escape analysis에 의해 힙에 할당된다.
+	// 반환 타입이 *ChatUIState이므로, 함수가 끝나도 state의 값이 복사되지 않고
+	// 힙에 남아있는 동일한 객체의 포인터가 반환된다.
+	// 즉, 반환 지점에서 값 복사가 일어나지 않는다.
+	state := &ChatUIState{}
+
+	state.chatLogCond.L = &state.WindowMutex
+	state.msgInputCond.L = &state.WindowMutex
+	state.optionCond.L = &state.WindowMutex
+	state.wg = &sync.WaitGroup{}
+	state.isChatLogCond = true
+	state.isOptionCond = false
+	state.killSwitch = false
+	state.is_chat_transfer_signal = false
+	state.backup_message = ""
+	state.chatLog = ""
+
+	return state
+}
 
 func DrawBeforeLogin(stdscr *gc.Window, UIListener chan string) {
 	// build the menu items
@@ -395,14 +425,8 @@ func DrawNewChat(stdscr *gc.Window, UIListener chan string) (string, string) {
 	return chatname, chatpw
 }
 
-func DrawChatRoom(stdscr *gc.Window, chatRoomID int16, chatLogBuffer []string, messageListener chan string, exitListener chan int16) {
-	var msg string
-	chatLogCond.L = &WindowMutex
-	msgInputCond.L = &WindowMutex
-	optionCond.L = &WindowMutex
-
-	_backup_message = ""
-	chatLog := make([]byte, 1024)
+func DrawChatRoom(stdscr *gc.Window, chatRoomID int16, chatLogBuffer []string, messageListener chan string, UIListener chan string) {
+	chatUIState := NewChatUIState()
 
 	cmd := exec.Command("clear")
 	cmd.Stdout = os.Stdout
@@ -411,8 +435,6 @@ func DrawChatRoom(stdscr *gc.Window, chatRoomID int16, chatLogBuffer []string, m
 	max_y, max_x := stdscr.MaxYX()
 	height_chatLogArea := max_y / 10 * 7
 	height_writeMsgArea := max_y / 10 * 3
-
-	startRow := 0
 
 	chatLogArea, _ := gc.NewWindow(height_chatLogArea, max_x-20, 0, 20)
 	defer chatLogArea.Delete()
@@ -456,51 +478,15 @@ func DrawChatRoom(stdscr *gc.Window, chatRoomID int16, chatLogBuffer []string, m
 	menu.Post()
 	menu.Window().Refresh()
 
-	go DrawChatRoomOptionArea(menu, messageListener)
+	chatUIState.wg.Add(3)
 	/* ---------------------------------------------------------- */
+	go DrawChatRoomOptionArea(menu, messageListener, chatUIState)
+	go DrawChatLogArea(chatLogArea, messageListener, chatLogBuffer, height_chatLogArea, chatUIState)
+	go DrawChatRoomInputArea(chatRoomID, writeMsgArea, messageListener, chatUIState)
+	chatUIState.wg.Wait() // 현재 프로시저가 먼저 종료되어 버리면 goncurses 객체들의 메모리 해제로 Segmentation Fault가 발생한다. 따라서 Waiting 로직이 필요함.
 
-	go DrawChatRoomInputArea(chatRoomID, writeMsgArea, messageListener)
-
-	for {
-		chatLogCond.L.Lock()
-		for !isChatLogCond || isOptionCond {
-			chatLogCond.Wait()
-		}
-		chatLogArea.Erase()
-		chatLogArea.MovePrint(1, 0, string(chatLog))
-		chatLogArea.Border(gc.ACS_VLINE, gc.ACS_VLINE, gc.ACS_HLINE, gc.ACS_HLINE, gc.ACS_LLCORNER, gc.ACS_URCORNER, gc.ACS_ULCORNER, gc.ACS_LRCORNER)
-
-		chatLogArea.Refresh()
-		chatLogArea.Keypad(false)
-
-		isChatLogCond = false
-		_is_chat_transfer_signal = false
-
-		msgInputCond.Broadcast()
-		chatLogCond.L.Unlock()
-
-		msg = <-messageListener // 이 코드는 DrawWriteMsgArea가 병행수행 중에도 실행될 수 있음.
-		_is_chat_transfer_signal = true
-
-		if strings.Compare(msg, "quit") == 0 {
-			// time.Sleep(time.Second)
-			break
-		} else if strings.Compare(msg, "/c up") == 0 {
-			startRow--
-			chatLog = []byte(ExtractValidVolumnChatlog(&startRow, height_chatLogArea, chatLogBuffer))
-		} else if strings.Compare(msg, "/c down") == 0 {
-			startRow++
-			chatLog = []byte(ExtractValidVolumnChatlog(&startRow, height_chatLogArea, chatLogBuffer))
-		} else {
-			chatLogBuffer = append(chatLogBuffer, msg)
-
-			startRow = -1
-
-			chatLog = []byte(ExtractValidVolumnChatlog(&startRow, height_chatLogArea, chatLogBuffer))
-		}
-	}
-
-	exitListener <- chatRoomID
+	UIListener <- "AfterLogin"
+	stdscr.Clear()
 }
 
 func ExtractValidVolumnChatlog(startRow *int, chatLogAreaHeight int, chatLogBuffer []string) string {
@@ -537,7 +523,54 @@ func ExtractValidVolumnChatlog(startRow *int, chatLogAreaHeight int, chatLogBuff
 	return convertedString
 }
 
-func DrawChatRoomOptionArea(optionArea *gc.Menu, messageListenr chan string) {
+func DrawChatLogArea(chatLogArea *gc.Window, messageListener chan string, chatLogBuffer []string, height_chatLogArea int, state *ChatUIState) {
+	var msg string
+
+	startRow := 0
+
+	for {
+		state.chatLogCond.L.Lock()
+		for !state.isChatLogCond || state.isOptionCond {
+			state.chatLogCond.Wait()
+		}
+		chatLogArea.Erase()
+		chatLogArea.MovePrint(1, 0, state.chatLog)
+		chatLogArea.Border(gc.ACS_VLINE, gc.ACS_VLINE, gc.ACS_HLINE, gc.ACS_HLINE, gc.ACS_LLCORNER, gc.ACS_URCORNER, gc.ACS_ULCORNER, gc.ACS_LRCORNER)
+
+		chatLogArea.Refresh()
+		chatLogArea.Keypad(false)
+
+		state.isChatLogCond = false
+		state.is_chat_transfer_signal = false
+
+		state.msgInputCond.Broadcast()
+		state.chatLogCond.L.Unlock()
+
+		msg = <-messageListener // 이 코드는 DrawWriteMsgArea가 병행수행 중에도 실행될 수 있음.
+		state.is_chat_transfer_signal = true
+
+		if strings.Compare(msg, "quit") == 0 {
+			// time.Sleep(time.Second)
+			break
+		} else if strings.Compare(msg, "/c up") == 0 {
+			startRow--
+			state.chatLog = ExtractValidVolumnChatlog(&startRow, height_chatLogArea, chatLogBuffer)
+		} else if strings.Compare(msg, "/c down") == 0 {
+			startRow++
+			state.chatLog = ExtractValidVolumnChatlog(&startRow, height_chatLogArea, chatLogBuffer)
+		} else {
+			chatLogBuffer = append(chatLogBuffer, msg)
+
+			startRow = -1
+
+			state.chatLog = ExtractValidVolumnChatlog(&startRow, height_chatLogArea, chatLogBuffer)
+		}
+	}
+
+	state.wg.Done()
+}
+
+func DrawChatRoomOptionArea(optionArea *gc.Menu, messageListener chan string, state *ChatUIState) {
 	/* 옵션창은 WriteMsgArea에서 특정 커맨드 키를 눌렀을 때 제어권을 넘겨받는 특수한 영역임.
 	 * WriteMsgArea에서 옵션 커맨드가 눌리면, 일단 WriteMsgArea는 OptionCond를 true로 변경하고 Lock을 놓음.
 	 * Unlock전에 BroadCast해서 Watiing 중인 OptionArea를 깨움.
@@ -545,9 +578,9 @@ func DrawChatRoomOptionArea(optionArea *gc.Menu, messageListenr chan string) {
 	 *  */
 
 	for {
-		optionCond.L.Lock()
-		for !isOptionCond || isChatLogCond {
-			optionCond.Wait()
+		state.optionCond.L.Lock()
+		for !state.isOptionCond || state.isChatLogCond {
+			state.optionCond.Wait()
 		}
 
 		optionArea.Post()
@@ -562,20 +595,26 @@ func DrawChatRoomOptionArea(optionArea *gc.Menu, messageListenr chan string) {
 				if strings.Compare(currentMenu.Name(), "Return Chat") == 0 {
 					break
 				} else if strings.Compare(currentMenu.Name(), "Exit Chat") == 0 {
-					messageListenr <- "quit"
-					killSwitch = true
+					messageListener <- "quit"
+					state.killSwitch = true
 					break
 				}
 			}
 		}
 
-		isOptionCond = false
-		msgInputCond.Broadcast()
-		optionCond.L.Unlock()
+		state.isOptionCond = false
+		state.msgInputCond.Broadcast()
+		state.optionCond.L.Unlock()
+
+		if state.killSwitch {
+			break
+		}
 	}
+
+	state.wg.Done()
 }
 
-func DrawChatRoomInputArea(chatRoomID int16, writeMsgArea *gc.Window, messageListener chan string) {
+func DrawChatRoomInputArea(chatRoomID int16, writeMsgArea *gc.Window, messageListener chan string, state *ChatUIState) {
 	// var buffer string
 	prefix := " New Message > "
 	prefix_length := len(prefix)
@@ -583,8 +622,8 @@ func DrawChatRoomInputArea(chatRoomID int16, writeMsgArea *gc.Window, messageLis
 	is_option_activated := false
 
 	for {
-		msgInputCond.L.Lock()
-		for isChatLogCond || isOptionCond { // ChatLog가 활성화 되어 있거나 OptionCond가 활성화 되어 있거나
+		state.msgInputCond.L.Lock()
+		for state.isChatLogCond || state.isOptionCond { // ChatLog가 활성화 되어 있거나 OptionCond가 활성화 되어 있거나
 			// lock을 잡고 isChatLogCond가 true인 경우 대기
 			// 그런데 chatLogArea에서 채널에 블록되어 있으면 데드락 발생할 수도..
 			// msg 입력 후 엔터 -> DrawWriteMsgArea에서 조건변수 true로 바꾸고 lock을 놓음.
@@ -612,13 +651,13 @@ func DrawChatRoomInputArea(chatRoomID int16, writeMsgArea *gc.Window, messageLis
 			// -> lock을 놓고 바로 context switch가 발생할 수도 있고 아닐 수도 있지만 그건 일단 배제하고 chatLogArea에서 채팅 로그를 업데이트하고 _is_chat_transfer_signal을 false로 바꿈.
 			// -> 그리고 chatLogArea에서 조건변수를 false로 바꾸고 lock을 놓게 되면, 다시 DrawWriteMsgArea가 lock을 잡고 Waiting 없이 수행됨.
 			// -> 이때도 _is_chat_transfer_signal이 false니 문제가 발생하지 않음.
-			msgInputCond.Wait()
+			state.msgInputCond.Wait()
 		}
 
 		message := ""
-		if _backup_message != "" {
-			message = _backup_message
-			_backup_message = ""
+		if state.backup_message != "" {
+			message = state.backup_message
+			state.backup_message = ""
 		} else {
 			message = prefix
 		}
@@ -629,19 +668,18 @@ func DrawChatRoomInputArea(chatRoomID int16, writeMsgArea *gc.Window, messageLis
 			writeMsgArea.Border(gc.ACS_VLINE, gc.ACS_VLINE, gc.ACS_HLINE, gc.ACS_HLINE, gc.ACS_LLCORNER, gc.ACS_URCORNER, gc.ACS_ULCORNER, gc.ACS_LRCORNER)
 			writeMsgArea.MovePrint(1, 1, message)
 			writeMsgArea.Refresh()
-
-			if killSwitch {
+			if state.killSwitch {
 				break
 			}
 			char := writeMsgArea.GetChar()
 
 			if char == 0 {
-				if _is_chat_transfer_signal {
+				if state.is_chat_transfer_signal {
 					// 입력 시간 1초 초과 시, 채팅이 서버로부터 전송되었는지 확인함
 					// 전송 확인 방법 _is_chat_transfer_signal을 확인하면 됨.
 					// chatLogArea에서 messageListener 채널에 메세지가 들어왔는지를 확인하고
 					// _is_chat_transfer_signal을 true로 변경할 것임.
-					_backup_message = message // chatLogArea에 채팅 기록을 업데이트한 후 다시 복구가 필요하므로 백업함.
+					state.backup_message = message // chatLogArea에 채팅 기록을 업데이트한 후 다시 복구가 필요하므로 백업함.
 					break
 				} else {
 					continue
@@ -650,14 +688,14 @@ func DrawChatRoomInputArea(chatRoomID int16, writeMsgArea *gc.Window, messageLis
 			} else if char == gc.KEY_RETURN {
 				break
 			} else if char == gc.KEY_UP {
-				message = "New Message > /c up"
+				message = prefix + "/c up"
 				break
 			} else if char == gc.KEY_DOWN {
-				message = "New Message > /c down"
+				message = prefix + "/c down"
 				break
 			} else if char == gc.KEY_F1 {
 				is_option_activated = true
-				_backup_message = message
+				state.backup_message = message
 				break
 			} else if char == gc.KEY_BACKSPACE {
 				if len(message) > prefix_length {
@@ -670,22 +708,23 @@ func DrawChatRoomInputArea(chatRoomID int16, writeMsgArea *gc.Window, messageLis
 			}
 		}
 
-		if killSwitch {
+		if state.killSwitch {
+			state.msgInputCond.L.Unlock()
 			break
 		}
 
 		if is_option_activated {
-			isOptionCond = true
+			state.isOptionCond = true
 			is_option_activated = false
-			optionCond.Broadcast()
-			msgInputCond.L.Unlock()
+			state.optionCond.Broadcast()
+			state.msgInputCond.L.Unlock()
 			continue
 		}
 
-		if _is_chat_transfer_signal {
-			isChatLogCond = true
-			chatLogCond.Broadcast()
-			msgInputCond.L.Unlock()
+		if state.is_chat_transfer_signal {
+			state.isChatLogCond = true
+			state.chatLogCond.Broadcast()
+			state.msgInputCond.L.Unlock()
 			continue
 		}
 
@@ -696,6 +735,10 @@ func DrawChatRoomInputArea(chatRoomID int16, writeMsgArea *gc.Window, messageLis
 		// }
 		if strings.Compare(message, "quit") == 0 {
 			messageListener <- "quit"
+			state.killSwitch = true
+			state.isOptionCond = true
+			state.optionCond.Broadcast()
+			state.msgInputCond.L.Unlock()
 			break
 		} else if strings.Compare(message, "/c up") == 0 {
 			messageListener <- "/c up"
@@ -705,8 +748,10 @@ func DrawChatRoomInputArea(chatRoomID int16, writeMsgArea *gc.Window, messageLis
 			// 입력받은 메세지를 서버로 전송해야함.
 			send_request.SendTransferMessage(chatRoomID, message)
 		}
-		isChatLogCond = true
-		chatLogCond.Broadcast()
-		msgInputCond.L.Unlock()
+		state.isChatLogCond = true
+		state.chatLogCond.Broadcast()
+		state.msgInputCond.L.Unlock()
 	}
+
+	state.wg.Done()
 }
