@@ -14,9 +14,10 @@ const (
 )
 
 const (
-	MAX_USER_ID_BYTE_LENGTH      = 16
-	MAX_USER_PW_BYTE_LENGTH      = 16
-	MAX_USER_NAME_BYTE_LENGTH    = 16
+	MAX_USER_ID_BYTE_LENGTH   = 16
+	MAX_USER_PW_BYTE_LENGTH   = 16
+	MAX_USER_NAME_BYTE_LENGTH = 16
+
 	MAX_CHAT_MESSAGE_BYTE_LENGTH = 512
 	MAX_CHAT_NAME_BYTE_LENGTH    = 20
 	MAX_CHAT_PW_BYTE_LENGTH      = 20
@@ -456,6 +457,7 @@ func (chatroominfo *ChatRoom) Decoding(bodyData []byte) {
 
 func (viewAvailableChatRoomRes *ViewAvailableChatRoomResPacket) Encoding() ([]byte, int16) {
 	totalSize := _packetHeaderSize + BYTE_OF_ERROR_CODE + 2 + viewAvailableChatRoomRes.Len*(network.BYTE_OF_CHATROOM_ID+MAX_CHAT_TIME_BYTE_LENGTH+MAX_USER_NAME_BYTE_LENGTH+MAX_CHAT_NAME_BYTE_LENGTH)
+	/* 2는 int16 바이트 수로 viewAvailableChatRoomRes.Len의 크기 */
 
 	sendBuf := make([]byte, totalSize)
 	writer := network.MakeWrite(sendBuf, true)

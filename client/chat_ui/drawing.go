@@ -1,6 +1,7 @@
 package chatui
 
 import (
+	"client/protocol"
 	"client/send_request"
 	"fmt"
 	"log"
@@ -425,6 +426,41 @@ func DrawNewChat(stdscr *gc.Window, UIListener chan string) (string, string) {
 	return chatname, chatpw
 }
 
+func DrawChatList(stdscr *gc.Window, chatListListener chan protocol.ViewAvailableChatRoomResPacket) {
+	viewAvailableChatRes := <-chatListListener
+
+	max_y, max_x := stdscr.MaxYX()
+	/* Todo: 생성자(16byte), 채팅방명(20byte), 생성일시(24byte), 인원 수(int -cast> 2byte)
+	- One line으로 String -> MenuList화
+	- */
+
+	menu_items := make([]string, viewAvailableChatRes.Len)
+	var i int16
+	for i = 0; i < viewAvailableChatRes.Len; i++ {
+		menu_items[i] = fmt.Sprintf("%-4d%-20s%-24s", viewAvailableChatRes.ChatRooms[i].ID, viewAvailableChatRes.ChatRooms[i].CHATROOM_NAME, viewAvailableChatRes.ChatRooms[i].CREATE_TIME)
+	}
+
+	items := make([]*gc.MenuItem, len(menu_items))
+	for i, val := range menu_items {
+		items[i], _ = gc.NewItem(val, "")
+		defer items[i].Free()
+	}
+
+	// create the menu
+	menu, _ := gc.NewMenu(items)
+	defer menu.Free()
+
+	menuwin, err := gc.NewWindow(max_y/2, 48, max_y/2-max_y/4, max_x/2-24)
+	if err != nil {
+		panic("frameArea cannot be created.")
+	}
+
+	menuwin.Border(gc.ACS_VLINE, gc.ACS_VLINE, gc.ACS_HLINE, gc.ACS_HLINE, gc.ACS_LLCORNER, gc.ACS_URCORNER, gc.ACS_ULCORNER, gc.ACS_LRCORNER)
+	menuwin.MovePrintf(1, 1, "%-4s%-20s%-24s", "ID", "CHATROOM", "TIMESTAMP")
+
+	menu.SetWindow(menuwin)
+}
+
 func DrawChatRoom(stdscr *gc.Window, chatRoomID int16, chatLogBuffer []string, messageListener chan string, UIListener chan string) {
 	chatUIState := NewChatUIState()
 
@@ -530,6 +566,9 @@ func DrawChatLogArea(chatLogArea *gc.Window, messageListener chan string, chatLo
 
 	for {
 		state.chatLogCond.L.Lock()
+		// OptionArea에 Focusing되어 있거나, 본인 조건변수가 거짓이면 대기
+		// 초기상태는 isChatLogCond = True이므로, DrawChatLogArea가 먼저 스케줄링 됨.
+		// 초기상태 시, 자신의 ChatUI를 그린 후 msg <- messageListener로 블록상태에 들어감.
 		for !state.isChatLogCond || state.isOptionCond {
 			state.chatLogCond.Wait()
 		}
@@ -546,7 +585,13 @@ func DrawChatLogArea(chatLogArea *gc.Window, messageListener chan string, chatLo
 		state.msgInputCond.Broadcast()
 		state.chatLogCond.L.Unlock()
 
-		msg = <-messageListener // 이 코드는 DrawWriteMsgArea가 병행수행 중에도 실행될 수 있음.
+		// 이 코드는 DrawChatRoomInputArea가 병행수행 중에도 실행될 수 있음.
+		// 메시지가 도착하면 state.is_chat_transfer_signal=True 변경 및 chatLogBuffer를 갱신하고,
+		// 자신이 설정해둔 isChatLogCond를 false로 해놓았기 때문에 Waiting에 들어감.
+		// 다음 DrawChatRoomInputArea가 1초 후 is_chat_transfer_signal=True임을 발견.
+		// -> DrawChatRoomInputArea가 isChatLogCond를 True로 변경하고 BroadCast하여 DrawChatLogArea를 깨움.
+		// -> DrawChatLogArea는 깨어나서 업데이트된 ChatLogBuffer를 ChatUI에 그리고 다시 msg <- .. 에서 블록
+		msg = <-messageListener
 		state.is_chat_transfer_signal = true
 
 		if strings.Compare(msg, "quit") == 0 {
@@ -623,7 +668,8 @@ func DrawChatRoomInputArea(chatRoomID int16, writeMsgArea *gc.Window, messageLis
 
 	for {
 		state.msgInputCond.L.Lock()
-		for state.isChatLogCond || state.isOptionCond { // ChatLog가 활성화 되어 있거나 OptionCond가 활성화 되어 있거나
+		for state.isChatLogCond || state.isOptionCond {
+			// ChatLog가 활성화 되어 있거나 OptionCond가 활성화 되어 있거나
 			// lock을 잡고 isChatLogCond가 true인 경우 대기
 			// 그런데 chatLogArea에서 채널에 블록되어 있으면 데드락 발생할 수도..
 			// msg 입력 후 엔터 -> DrawWriteMsgArea에서 조건변수 true로 바꾸고 lock을 놓음.
@@ -672,6 +718,7 @@ func DrawChatRoomInputArea(chatRoomID int16, writeMsgArea *gc.Window, messageLis
 				break
 			}
 			char := writeMsgArea.GetChar()
+			// Timeout되어도 별 다른 event가 없으면 재입력 대기.
 
 			if char == 0 {
 				if state.is_chat_transfer_signal {
@@ -748,6 +795,15 @@ func DrawChatRoomInputArea(chatRoomID int16, writeMsgArea *gc.Window, messageLis
 			// 입력받은 메세지를 서버로 전송해야함.
 			send_request.SendTransferMessage(chatRoomID, message)
 		}
+
+		// 이건 왜 필요한거지?
+		// 위 조건 중 else if, else만 보면 모두 messageListener에 메시지를 주입하는 이벤트를 유발함.
+		// else 블록은 서버에 메시지가 보내지면, 서버가 응답하여 messageListener에 서버 메시지가 들어가게 됨.
+		// 따라서, 아래 코드는 GetChar()가 있는 for문에서 1초 후 is_chat_transfer_signal가 True가 되면
+		// 735번 라인에서 똑같이 수행하게 될 것.
+		// 그러나 ChatLogCond를 바로 깨워주지 않으면, ChatLog를 출력하는데 Delay가 발생함.
+		// 따라서 아래 코드는 있는 것이 좋음.
+		// 735번 라인 코드는 내가 보낸 것이 아닌 타인이 보낸 메세지를 체킹하는데 필요함.
 		state.isChatLogCond = true
 		state.chatLogCond.Broadcast()
 		state.msgInputCond.L.Unlock()

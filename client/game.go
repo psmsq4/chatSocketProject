@@ -7,8 +7,6 @@ import (
 	"client/send_request"
 	"fmt"
 	"log"
-	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -22,11 +20,12 @@ import (
 )
 
 var (
-	_MessageListener chan string
-	_UIListener      = make(chan string, 1)
-	_sqlite3Client   *sql.DB
-	_chatRoomID      int16
-	_chatLogBuffer   []string
+	_MessageListener  chan string
+	_UIListener       = make(chan string, 1)
+	_ChatListListener = make(chan protocol.ViewAvailableChatRoomResPacket)
+	_sqlite3Client    *sql.DB
+	_chatRoomID       int16
+	_chatLogBuffer    []string
 
 	isGoncursesInitialized = false
 	goncursesMutex         sync.Mutex
@@ -138,6 +137,18 @@ func DrawGUI() { // goroutine으로 돌아감.
 				globalStdscr.Refresh()
 			case "OldChat": // 채팅방 접속 시도
 			case "ChatList": // 채팅 목록 조회
+				/* Requirement
+				   - 전체 채팅 개수
+				   - 채팅방 별 참여인원
+				   - 채팅방 별 제목
+				   - 채팅방 별 방장ID
+				   -  */
+				send_request.SendViewAvailableChatRoom(_userID)
+				ui.DrawChatList(globalStdscr, _ChatListListener)
+
+				/* Todo: 서버로부터 채팅 목록을 받아오기 */
+				/* Todo: 받아온 채팅 목록을 DrawChatList()에 넘겨주기 */
+				/* Todo: DrawChatList()로부터 유저가 선택한 OldChat 받아오기 */
 			case "InChat":
 				ui.DrawChatRoom(globalStdscr, _chatRoomID, _chatLogBuffer, _MessageListener, _UIListener)
 				globalStdscr.Refresh()
@@ -174,31 +185,27 @@ func ConnectLifeGameServer() {
 }
 
 func (client *LifeGameClient) PacketProcess() {
-	for {
-		select {
-		case packet := <-client.PacketChan:
-			{
-				bodySize := packet.DataSize
-				bodyData := packet.Data
-				packetId := packet.Id
+	for packet := range client.PacketChan {
+		bodySize := packet.DataSize
+		bodyData := packet.Data
+		packetId := packet.Id
 
-				if packetId == protocol.PACKET_ID_LOGIN_RES {
-					ProcessPacketLogin(bodySize, bodyData)
-				} else if packetId == protocol.PACKET_ID_JOIN_RES {
-					ProcessPacketJoin(bodySize, bodyData)
-				} else if packetId == protocol.PACKET_CREATE_NEW_CHATROOM_RES {
-					ProcessPacketCreateNewChat(bodySize, bodyData)
-				} else if packetId == protocol.PACKET_TRANSFER_MESSAGE_RES {
-					ProcessPacketTransferMessageRes(bodySize, bodyData)
-				} else if packetId == protocol.PACKET_BROADCAST_MESSAGE {
-					// go Ticker(_MessageListener)
-					ProcessPacketBroadcastMessage(bodySize, bodyData)
-				} else if packetId == protocol.PACKET_VIEW_AVAILABLE_CHATROOM_RES {
-					ProcessPacketViewAvailableChat(bodySize, bodyData)
-				} else if packetId == protocol.PACKET_RENEW_CHATLOG_RES {
-
-				}
-			}
+		switch packetId {
+		case protocol.PACKET_ID_LOGIN_RES:
+			ProcessPacketLogin(bodySize, bodyData)
+		case protocol.PACKET_ID_JOIN_RES:
+			ProcessPacketJoin(bodySize, bodyData)
+		case protocol.PACKET_CREATE_NEW_CHATROOM_RES:
+			ProcessPacketCreateNewChat(bodySize, bodyData)
+		case protocol.PACKET_TRANSFER_MESSAGE_RES:
+			ProcessPacketTransferMessageRes(bodySize, bodyData)
+		case protocol.PACKET_BROADCAST_MESSAGE:
+			// go Ticker(_MessageListener)
+			ProcessPacketBroadcastMessage(bodySize, bodyData)
+		case protocol.PACKET_VIEW_AVAILABLE_CHATROOM_RES:
+			ProcessPacketViewAvailableChat(bodySize, bodyData)
+		case protocol.PACKET_RENEW_CHATLOG_RES:
+			// 아직 구현되지 않음
 		}
 	}
 }
@@ -221,10 +228,8 @@ func ProcessPacketViewAvailableChat(bodySize int16, bodyData []byte) {
 		fmt.Println("Can't Bring Available Chatting Rooms From Server!")
 		return
 	}
-	var i int16
-	for i = 0; i < viewAvailableChatRes.Len; i++ {
-		fmt.Printf("%-5d|%s|%s|%s\n", viewAvailableChatRes.ChatRooms[i].ID, string(viewAvailableChatRes.ChatRooms[i].CHATROOM_NAME), string(viewAvailableChatRes.ChatRooms[i].CREATE_TIME), string(viewAvailableChatRes.ChatRooms[i].CREATOR_NAME))
-	}
+
+	_ChatListListener <- viewAvailableChatRes
 }
 
 func StoreMessageToDB(messageID int32, chatRoomID int16, message string, timeChat string, userID string) int {
@@ -314,52 +319,8 @@ func ProcessPacketJoin(bodySize int16, bodyData []byte) {
 	_UIListener <- "BeforeLogin"
 }
 
-func ViewAvailableChatRoom() {
-	cmd := exec.Command("clear")
-	cmd.Stdout = os.Stdout
-	cmd.Run()
-
-	fmt.Println("접속 가능한 채팅방 목록")
-	send_request.SendViewAvailableChatRoom(_userID)
-}
-
 func ViewUserJoinChatRoom() {
 
-}
-
-func CreateNewChatRoom() {
-	cmd := exec.Command("clear")
-	cmd.Stdout = os.Stdout
-	cmd.Run()
-
-	var chatRoomName string
-	var chatRoomPW string
-
-	fmt.Print("채팅방 제목: ")
-	fmt.Scanf("%s", &chatRoomName)
-	fmt.Print("채팅방 비밀번호(없으면 Enter): ")
-	fmt.Scanf("%s", &chatRoomPW)
-
-	send_request.SendCreateNewChatRoomReq(chatRoomName, chatRoomPW)
-}
-
-func AfterLoginUserOption() {
-	var option int8
-	fmt.Printf("***** 환영합니다. %s님. *****\n", _userID)
-	fmt.Println("1. 채팅방 조회")
-	fmt.Println("2. 기존 채팅방 접속")
-	fmt.Println("3. 신규 채팅방 생성")
-	fmt.Print("Option Select: ")
-
-	fmt.Scanf("%d", &option)
-	switch option {
-	case 1:
-		ViewAvailableChatRoom()
-	case 2:
-		ViewUserJoinChatRoom()
-	case 3:
-		CreateNewChatRoom()
-	}
 }
 
 func ProcessPacketLogin(bodySize int16, bodyData []byte) {
