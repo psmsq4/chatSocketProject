@@ -62,10 +62,11 @@ type ViewAvailableChatRoomReqPacket struct {
 }
 
 type ChatRoom struct {
-	ID            int16
-	CREATE_TIME   []byte
-	CREATOR_NAME  []byte
-	CHATROOM_NAME []byte
+	ID             int16
+	CREATE_TIME    []byte
+	CREATOR_NAME   []byte
+	CHATROOM_NAME  []byte
+	NUM_ATTENDANCE int16
 } // ViewAvailableChatRoomResPacket에 종속되는 구조체
 
 type ViewAvailableChatRoomResPacket struct {

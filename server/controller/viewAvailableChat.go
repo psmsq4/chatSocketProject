@@ -23,24 +23,26 @@ func ProcessPacketViewAvailableChatRoom(sessionUniqueId uint64, sessionId int32,
 		fmt.Println("Fetch Error")
 	}
 
-	var chatRoomInfos []protocol.ChatRoom
-	var chatRoomID int16
-	var chatRoomCreateDate string
-	var chatRoomCreatorName string
-	var chatRoomName string
+	var chatroom_infos []protocol.ChatRoom
+	var chatroom_id int16
+	var chatroom_create_date string
+	var chatroom_creator string
+	var chatroom_name string
+	var num_attendance int16
 	idx := 0
 
 	for results.Next() {
-		results.Scan(&chatRoomID, &chatRoomCreateDate, &chatRoomCreatorName, &chatRoomName)
+		results.Scan(&chatroom_id, &chatroom_create_date, &chatroom_creator, &chatroom_name, &num_attendance)
 
-		chatRoomInfos = append(chatRoomInfos, protocol.ChatRoom{})
-		chatRoomInfos[idx].ID = chatRoomID
-		chatRoomInfos[idx].CREATE_TIME = make([]byte, protocol.MAX_CHAT_TIME_BYTE_LENGTH)
-		copy(chatRoomInfos[idx].CREATE_TIME[:], []byte(chatRoomCreateDate))
-		chatRoomInfos[idx].CREATOR_NAME = make([]byte, protocol.MAX_USER_NAME_BYTE_LENGTH)
-		copy(chatRoomInfos[idx].CREATOR_NAME[:], []byte(chatRoomCreatorName))
-		chatRoomInfos[idx].CHATROOM_NAME = make([]byte, protocol.MAX_CHAT_NAME_BYTE_LENGTH)
-		copy(chatRoomInfos[idx].CHATROOM_NAME[:], []byte(chatRoomName))
+		chatroom_infos = append(chatroom_infos, protocol.ChatRoom{})
+		chatroom_infos[idx].ID = chatroom_id
+		chatroom_infos[idx].CREATE_TIME = make([]byte, protocol.MAX_CHAT_TIME_BYTE_LENGTH)
+		copy(chatroom_infos[idx].CREATE_TIME[:], []byte(chatroom_create_date))
+		chatroom_infos[idx].CREATOR_NAME = make([]byte, protocol.MAX_USER_NAME_BYTE_LENGTH)
+		copy(chatroom_infos[idx].CREATOR_NAME[:], []byte(chatroom_creator))
+		chatroom_infos[idx].CHATROOM_NAME = make([]byte, protocol.MAX_CHAT_NAME_BYTE_LENGTH)
+		copy(chatroom_infos[idx].CHATROOM_NAME[:], []byte(chatroom_name))
+		chatroom_infos[idx].NUM_ATTENDANCE = num_attendance
 
 		// if !results.Next() {
 		// 	break
@@ -50,7 +52,7 @@ func ProcessPacketViewAvailableChatRoom(sessionUniqueId uint64, sessionId int32,
 	if idx == 0 {
 		fmt.Println("접속 가능한 채팅방 없음.")
 	}
-	SendViewAvailableChatRoomResult(sessionUniqueId, sessionId, chatRoomInfos, 0)
+	SendViewAvailableChatRoomResult(sessionUniqueId, sessionId, chatroom_infos, 0)
 	results.Close()
 }
 

@@ -232,10 +232,14 @@ func InsertAttendanceInformation(chatRoomID int16, userID string, auth string) {
 
 func SelectChatRoomInfo() (*sql.Rows, int) {
 	stmt, err := _mysqlClient.Prepare(
-		`SELECT T1.CHAT_ROOM_ID, T1.CREATE_DATE, T2.USER_NAME, T1.CHAT_ROOM_NAME 
+		`SELECT T1.CHAT_ROOM_ID, T1.CREATE_DATE, T2.USER_NAME, T1.CHAT_ROOM_NAME, COUNT(T1.CHAT_ROOM_ID) AS ATTENDACNE
 		 FROM CHAT_ROOM T1
 		 INNER JOIN USERS T2
-		 	ON T1.USER_ID = T2.USER_ID`)
+		 	ON T1.USER_ID = T2.USER_ID
+		 INNER JOIN CHAT_USER_ATTENDANCE T3
+		    ON T1.CHAT_ROOM_ID = T3.CHAT_ROOM_ID
+		 GROUP 
+		    BY T1.CHAT_ROOM_ID`)
 	if err != nil {
 		fmt.Println("SelectChatRoomInfo SELECT QUERY_PREPARE ERROR")
 		return nil, errorcode.ERROR_CODE_FAIL_VIEW_AVAILABLE_CHATROOM

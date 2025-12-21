@@ -144,7 +144,7 @@ func DrawGUI() { // goroutine으로 돌아감.
 				   - 채팅방 별 방장ID
 				   -  */
 				send_request.SendViewAvailableChatRoom(_userID)
-				ui.DrawChatList(globalStdscr, _ChatListListener)
+				ui.DrawChatList(globalStdscr, _ChatListListener, _UIListener)
 
 				/* Todo: 서버로부터 채팅 목록을 받아오기 */
 				/* Todo: 받아온 채팅 목록을 DrawChatList()에 넘겨주기 */

@@ -1,12 +1,14 @@
 package chatui
 
 import (
+	"bytes"
 	"client/protocol"
 	"client/send_request"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -426,10 +428,10 @@ func DrawNewChat(stdscr *gc.Window, UIListener chan string) (string, string) {
 	return chatname, chatpw
 }
 
-func DrawChatList(stdscr *gc.Window, chatListListener chan protocol.ViewAvailableChatRoomResPacket) {
+func DrawChatList(stdscr *gc.Window, chatListListener chan protocol.ViewAvailableChatRoomResPacket, UIListener chan string) int {
 	viewAvailableChatRes := <-chatListListener
 
-	max_y, max_x := stdscr.MaxYX()
+	max_y, _ := stdscr.MaxYX()
 	/* Todo: 생성자(16byte), 채팅방명(20byte), 생성일시(24byte), 인원 수(int -cast> 2byte)
 	- One line으로 String -> MenuList화
 	- */
@@ -437,7 +439,11 @@ func DrawChatList(stdscr *gc.Window, chatListListener chan protocol.ViewAvailabl
 	menu_items := make([]string, viewAvailableChatRes.Len)
 	var i int16
 	for i = 0; i < viewAvailableChatRes.Len; i++ {
-		menu_items[i] = fmt.Sprintf("%-4d%-20s%-24s", viewAvailableChatRes.ChatRooms[i].ID, viewAvailableChatRes.ChatRooms[i].CHATROOM_NAME, viewAvailableChatRes.ChatRooms[i].CREATE_TIME)
+		id := viewAvailableChatRes.ChatRooms[i].ID
+		timestamp := string(bytes.Trim(viewAvailableChatRes.ChatRooms[i].CREATE_TIME, "\x00"))
+		chatroom_name := string(bytes.Trim(viewAvailableChatRes.ChatRooms[i].CHATROOM_NAME, "\x00"))
+		num_attendance := viewAvailableChatRes.ChatRooms[i].NUM_ATTENDANCE
+		menu_items[i] = fmt.Sprintf("%-6d%-20s%-22s%-10d", id, chatroom_name, timestamp, num_attendance)
 	}
 
 	items := make([]*gc.MenuItem, len(menu_items))
@@ -449,16 +455,48 @@ func DrawChatList(stdscr *gc.Window, chatListListener chan protocol.ViewAvailabl
 	// create the menu
 	menu, _ := gc.NewMenu(items)
 	defer menu.Free()
-
-	menuwin, err := gc.NewWindow(max_y/2, 48, max_y/2-max_y/4, max_x/2-24)
+	HEIGHT_MENUWIN_AREA := max_y / 2
+	WIDTH_MENUWIN_AREA := 60
+	menuwin, err := gc.NewWindow(HEIGHT_MENUWIN_AREA, WIDTH_MENUWIN_AREA, HEIGHT_MENUWIN_AREA/4, WIDTH_MENUWIN_AREA/4)
 	if err != nil {
 		panic("frameArea cannot be created.")
 	}
-
 	menuwin.Border(gc.ACS_VLINE, gc.ACS_VLINE, gc.ACS_HLINE, gc.ACS_HLINE, gc.ACS_LLCORNER, gc.ACS_URCORNER, gc.ACS_ULCORNER, gc.ACS_LRCORNER)
-	menuwin.MovePrintf(1, 1, "%-4s%-20s%-24s", "ID", "CHATROOM", "TIMESTAMP")
-
+	menuwin.MovePrintf(1, 1, "%-6s%-20s%-22s%-10s", "ID", "CHATROOM", "CREATE DATE", "ATTEND")
+	menuwin.HLine(2, 1, gc.ACS_HLINE, 58)
+	menuwin.Keypad(true)
 	menu.SetWindow(menuwin)
+
+	HEIGHT_OPTION_AREA := HEIGHT_MENUWIN_AREA - 3
+	WIDTH_OPTION_AREA := WIDTH_MENUWIN_AREA - 2
+	dwin := menuwin.Derived(HEIGHT_OPTION_AREA, WIDTH_OPTION_AREA, 3, 1)
+	defer dwin.Delete()
+	menu.SubWindow(dwin)
+	menu.Format(5, 1)
+	menu.Mark("")
+
+	menu.Post()
+	menu.Window().Refresh()
+
+	var selected_id int
+	for {
+		menu.Window().Refresh()
+		ch := menu.Window().GetChar()
+		menu.Driver(gc.DriverActions[ch])
+
+		if ch == gc.KEY_RETURN {
+			currentMenu := menu.Current(nil)
+
+			parse := strings.Split(currentMenu.Name(), " ")
+			selected_id, _ = strconv.Atoi(parse[0])
+			fmt.Print(selected_id)
+
+			break
+		}
+	}
+
+	UIListener <- "OldChat"
+	return selected_id
 }
 
 func DrawChatRoom(stdscr *gc.Window, chatRoomID int16, chatLogBuffer []string, messageListener chan string, UIListener chan string) {
@@ -474,7 +512,7 @@ func DrawChatRoom(stdscr *gc.Window, chatRoomID int16, chatLogBuffer []string, m
 
 	chatLogArea, _ := gc.NewWindow(height_chatLogArea, max_x-20, 0, 20)
 	defer chatLogArea.Delete()
-	writeMsgArea, _ := gc.NewWindow(height_writeMsgArea+1, max_x, height_chatLogArea, 0)
+	writeMsgArea, _ := gc.NewWindow(height_writeMsgArea, max_x, height_chatLogArea, 0)
 	defer writeMsgArea.Delete()
 
 	chatLogArea.ScrollOk(true)
@@ -495,18 +533,20 @@ func DrawChatRoom(stdscr *gc.Window, chatRoomID int16, chatLogBuffer []string, m
 	menu, _ := gc.NewMenu(items)
 	defer menu.Free()
 
-	HEIGHT_OPTION_AREA := height_chatLogArea
-	WIDTH_OPTION_AREA := 20
-
-	menuwin, _ := gc.NewWindow(HEIGHT_OPTION_AREA, WIDTH_OPTION_AREA, 0, 0)
+	HEIGHT_MENUWIN_AREA := height_chatLogArea
+	WIDTH_MENUWIN_AREA := 20
+	menuwin, _ := gc.NewWindow(HEIGHT_MENUWIN_AREA, WIDTH_MENUWIN_AREA, 0, 0)
 	defer menuwin.Delete()
 	menuwin.Keypad(true)
 	menuwin.Border(gc.ACS_VLINE, gc.ACS_VLINE, gc.ACS_HLINE, gc.ACS_HLINE, gc.ACS_LLCORNER, gc.ACS_URCORNER, gc.ACS_ULCORNER, gc.ACS_LRCORNER)
-
 	menu.SetWindow(menuwin)
-	dwin := menuwin.Derived(HEIGHT_OPTION_AREA-2, WIDTH_OPTION_AREA-2, 1, 1)
+
+	HEIGHT_OPTION_AREA := HEIGHT_MENUWIN_AREA - 2
+	WIDTH_OPTION_AREA := WIDTH_MENUWIN_AREA - 2
+	dwin := menuwin.Derived(HEIGHT_OPTION_AREA, WIDTH_OPTION_AREA, 1, 1)
 	defer dwin.Delete()
 	menu.SubWindow(dwin)
+
 	menu.Format(5, 1)
 	menu.Mark(" * ")
 
