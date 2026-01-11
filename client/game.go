@@ -25,6 +25,7 @@ var (
 	_ChatListListener = make(chan protocol.ViewAvailableChatRoomResPacket)
 	_sqlite3Client    *sql.DB
 	_chatRoomID       int16
+	_chatRoomName     string
 	_chatLogBuffer    []string
 
 	isGoncursesInitialized = false
@@ -133,9 +134,12 @@ func DrawGUI() { // goroutine으로 돌아감.
 				globalStdscr.Refresh()
 			case "NewChat": // 새 채팅 등록
 				chatname, chatpw := ui.DrawNewChat(globalStdscr, _UIListener)
+				_chatRoomName = chatname
 				send_request.SendCreateNewChatRoomReq(chatname, chatpw)
 				globalStdscr.Refresh()
 			case "OldChat": // 채팅방 접속 시도
+				send_request.SendConnAvailableChatRoom(_userID, _chatRoomID)
+				globalStdscr.Refresh()
 			case "ChatList": // 채팅 목록 조회
 				/* Requirement
 				   - 전체 채팅 개수
@@ -144,13 +148,13 @@ func DrawGUI() { // goroutine으로 돌아감.
 				   - 채팅방 별 방장ID
 				   -  */
 				send_request.SendViewAvailableChatRoom(_userID)
-				ui.DrawChatList(globalStdscr, _ChatListListener, _UIListener)
-
+				_chatRoomID, _chatRoomName = ui.DrawChatList(globalStdscr, _ChatListListener, _UIListener)
+				globalStdscr.Refresh()
 				/* Todo: 서버로부터 채팅 목록을 받아오기 */
 				/* Todo: 받아온 채팅 목록을 DrawChatList()에 넘겨주기 */
 				/* Todo: DrawChatList()로부터 유저가 선택한 OldChat 받아오기 */
 			case "InChat":
-				ui.DrawChatRoom(globalStdscr, _chatRoomID, _chatLogBuffer, _MessageListener, _UIListener)
+				ui.DrawChatRoom(globalStdscr, _chatRoomName, _chatRoomID, _chatLogBuffer, _MessageListener, _UIListener)
 				globalStdscr.Refresh()
 			}
 		}
@@ -177,7 +181,7 @@ func ConnectLifeGameServer() {
 		PacketTotalSizeFunc: network.PacketTotalSize,
 		PacketHeaderSize:    protocol.GetPacketHeaderSize(),
 	}
-	_MessageListener = make(chan string)
+	_MessageListener = make(chan string, 30)
 	go client.PacketProcess()
 	go DrawGUI()
 
@@ -204,8 +208,10 @@ func (client *LifeGameClient) PacketProcess() {
 			ProcessPacketBroadcastMessage(bodySize, bodyData)
 		case protocol.PACKET_VIEW_AVAILABLE_CHATROOM_RES:
 			ProcessPacketViewAvailableChat(bodySize, bodyData)
+		case protocol.PACKET_CONN_AVAILABLE_CHATROOM_RES:
+			ProcessPacketConnAvailableChat(bodySize, bodyData)
 		case protocol.PACKET_RENEW_CHATLOG_RES:
-			// 아직 구현되지 않음
+			ProcessPacketRenewChatLog(bodySize, bodyData)
 		}
 	}
 }
@@ -220,12 +226,144 @@ func (client *LifeGameClient) PacketProcess() {
 // 	}
 // }
 
+func ProcessPacketRenewChatLog(bodySize int16, bodyData []byte) {
+	var renewChatLogRes protocol.RenewChatLogResPacket
+
+	result := renewChatLogRes.Decoding(bodyData)
+	if !result {
+		fmt.Println("RenewChatLogRes Decoding Fail")
+		return
+	}
+
+	switch renewChatLogRes.ErrorCode {
+	case protocol.ERROR_CODE_RENEW_LAST_MESSAGE:
+		/* 서버로 부터 마지막 메세지를 받음. */
+		/* Todo: 종료 -> DrawUI 쪽으로 이벤트를 보내 이때까지 수신만 메시지를 그리도록 함. */
+		/* └ ProcessConnAvailableChat에서 이미 응답을 받자마자 UIListener <- "InChat"을 그리도록 함. */
+	case protocol.ERROR_CODE_NONE:
+		/* 서버로 부터 메시지 정상 수신 */
+		/* Todo: 받은 메시지를 Sqlite에 저장해야함. */
+		message := string(bytes.Trim(renewChatLogRes.Message, "\x00"))
+		timestamp := string(bytes.Trim(renewChatLogRes.TimeChat, "\x00"))
+		user_name := string(bytes.Trim(renewChatLogRes.UserName, "\x00"))
+		result := StoreMessageToDB(
+			renewChatLogRes.MessageSequence,
+			renewChatLogRes.ChatRoomID,
+			message,
+			timestamp,
+			user_name,
+		)
+		if result != protocol.ERROR_CODE_NONE {
+			fmt.Println("Save Fail")
+		}
+
+		RenewChatLogFormatString := fmt.Sprintf(" %s  |  %s\n [%d]: %s\n\n", user_name, timestamp, renewChatLogRes.MessageSequence, message)
+		/* 개선사항: _MessageListener를 Buffered(30) Channel로 변경 */
+		/* └ 이로 인해, 송신자는 Blocking 없이 서버에 계속 Request를 날릴 수 있음. */
+		_MessageListener <- RenewChatLogFormatString
+
+		/* Todo: 다음 메시지를 요청해야함. */
+		send_request.SendRenewChatLogReqPacket(renewChatLogRes.MessageSequence, renewChatLogRes.ChatRoomID)
+	}
+}
+
+func FetchExistChatLogFromDB(chatroom_id int16, MessageListener chan string) {
+	stmt, err := _sqlite3Client.Prepare(`
+	SELECT USER_NAME, TIME_CHAT, MESSAGE_ID, MESSAGE
+	FROM MESSAGE_LOG
+	WHERE CHAT_ROOM_ID = ?`)
+	if err != nil {
+		fmt.Println("FetechExistChatLogFromDB QUERY_PREPARE ERROR")
+		return
+	}
+	defer stmt.Close()
+
+	query_result, err := stmt.Query(chatroom_id)
+	if err != nil {
+		fmt.Println("FetechExistChatLogFromDB QUERY ERROR")
+		return
+	}
+	defer query_result.Close()
+
+	var fetched_user_name string
+	var fetched_time_chat string
+	var fetched_message_id int
+	var fetched_message string
+	for query_result.Next() {
+		query_result.Scan(&fetched_user_name, &fetched_time_chat, &fetched_message_id, &fetched_message)
+
+		ExistChatLogFormatString := fmt.Sprintf(" %s  |  %s\n [%d]: %s\n\n", fetched_user_name, fetched_time_chat, fetched_message_id, fetched_message)
+		MessageListener <- ExistChatLogFormatString
+	}
+}
+
+func LastMIDFromCID(chatroom_id int16) int32 {
+	stmt, err := _sqlite3Client.Prepare(`
+	SELECT MESSAGE_ID 
+	FROM MESSAGE_LOG
+	WHERE CHAT_ROOM_ID = ?
+	ORDER 
+		BY MESSAGE_ID DESC
+	LIMIT 1
+	`)
+	if err != nil {
+		fmt.Println("LastMIDFromCID QUERY_PREPARE ERROR")
+		return -1
+	}
+	// defer 안 해주면 StoreMessageToDB에서 lock 오류 발생
+	defer stmt.Close()
+
+	result, err := stmt.Query(chatroom_id)
+	if err != nil {
+		fmt.Println("LastMIDFromCID QUERY ERROR")
+		return -1
+	}
+	// defer 안 해주면 StoreMessageToDB에서 lock 오류 발생
+	defer result.Close()
+
+	var last_message_id int32
+	if result.Next() {
+		result.Scan(&last_message_id)
+		return last_message_id
+	}
+
+	return -1
+}
+
+func ProcessPacketConnAvailableChat(bodySize int16, bodyData []byte) {
+	var connAvailableChatRes protocol.ConnAvailableChatRoomResPacket
+
+	result := connAvailableChatRes.Decoding(bodyData)
+	if !result {
+		fmt.Println("ConnAvailableChatRes Decoding Fail")
+		return
+	}
+
+	// 일단 DrawUI goroutine은 DrawChatRoom에서 (<- MessageListener)에 대기 시켜놓아야 함.
+	// _UIListener에 먼저 InChat을 넣고 MessageListener의 수신자를 지정해놓아야 Block이 안 됨.
+	switch connAvailableChatRes.ErrorCode {
+	case protocol.ERROR_CODE_ALREADY_PART_IN_CONN:
+		_UIListener <- "InChat"
+		/* [Yet]Todo: sqlite에서 일단 갖고 있는 채팅 내역을 한 개씩 _MessageListener로 쏴주기 */
+		FetchExistChatLogFromDB(connAvailableChatRes.ChatRoomID, _MessageListener)
+
+		/* [Done]Todo: sqlite에서 요청한 chatroom_id와 연결된 message_id의 last값을 RenewChatLogReq 형태로 서버에 요청 */
+		last_message_id := LastMIDFromCID(connAvailableChatRes.ChatRoomID)
+		send_request.SendRenewChatLogReqPacket(last_message_id, connAvailableChatRes.ChatRoomID)
+	case protocol.ERROR_CODE_NONE:
+		_UIListener <- "InChat"
+		send_request.SendRenewChatLogReqPacket(-1, connAvailableChatRes.ChatRoomID)
+	case protocol.ERROR_CODE_FAIL_CONN_AVAILABLE_CHATROOM:
+		panic("CONNECT Chatting Room Fail..")
+	}
+}
+
 func ProcessPacketViewAvailableChat(bodySize int16, bodyData []byte) {
 	var viewAvailableChatRes protocol.ViewAvailableChatRoomResPacket
 
 	result := (&viewAvailableChatRes).Decoding(bodyData, bodySize)
 	if !result {
-		fmt.Println("Can't Bring Available Chatting Rooms From Server!")
+		fmt.Println("viewAvailableChatRes Decoding Fail")
 		return
 	}
 
@@ -244,19 +382,33 @@ func StoreMessageToDB(messageID int32, chatRoomID int16, message string, timeCha
 	// For a single insert, you could use Exec() directly on the DB handle without Begin(),
 	// but using Begin() here ensures that the insert is part of a transaction,
 	// which can be important for consistency or future extensibility.
-	tx, _ := _sqlite3Client.Begin()
+	tx, err := _sqlite3Client.Begin()
+	if err != nil {
+		fmt.Println("Begin error:", err)
+		return protocol.ERROR_CODE_FAIL_STORE_MESSAGE_TO_DB
+	}
+
 	stmt, err := tx.Prepare("INSERT INTO MESSAGE_LOG (MESSAGE_ID, CHAT_ROOM_ID, MESSAGE, TIME_CHAT, USER_NAME) VALUES (?, ?, ?, ?, ?)")
 	if err != nil {
-		fmt.Println(err)
+		fmt.Println("Prepare error:", err)
+		tx.Rollback()
 		return protocol.ERROR_CODE_FAIL_STORE_MESSAGE_TO_DB
 	}
 	defer stmt.Close()
 
 	_, err = stmt.Exec(messageID, chatRoomID, message, timeChat, userID)
 	if err != nil {
-		fmt.Println(err)
+		fmt.Println("Exec error:", err)
+		tx.Rollback()
+		return protocol.ERROR_CODE_FAIL_STORE_MESSAGE_TO_DB
 	}
-	tx.Commit()
+
+	err = tx.Commit()
+	if err != nil {
+		fmt.Println("Commit error:", err)
+		return protocol.ERROR_CODE_FAIL_STORE_MESSAGE_TO_DB
+	}
+
 	return protocol.ERROR_CODE_NONE
 }
 
@@ -355,10 +507,17 @@ func LoadChatLogBuffer() {
 	stmt, err := _sqlite3Client.Prepare("SELECT MESSAGE_ID, MESSAGE, TIME_CHAT, USER_NAME FROM MESSAGE_LOG WHERE CHAT_ROOM_ID = ?")
 	if err != nil {
 		fmt.Println(err)
+		return
 	}
 	defer stmt.Close()
 
 	rows, err := stmt.Query(_chatRoomID)
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	defer rows.Close()
+
 	for rows.Next() {
 		var messageID int32
 		var message string

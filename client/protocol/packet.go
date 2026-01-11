@@ -444,7 +444,7 @@ func (viewAvailableChatRoomReq *ViewAvailableChatRoomReqPacket) Decoding(bodyDat
 	return true
 }
 
-func (chatroominfo *ChatRoom) Encoding() []byte {
+func (chatroominfo *ChatRoom) EncodingPacket() []byte {
 	totalSize := BYTE_OF_CHATROOM_ID + MAX_CHAT_TIME_BYTE_LENGTH + MAX_USER_NAME_BYTE_LENGTH + MAX_CHAT_NAME_BYTE_LENGTH + BYTE_OF_NUM_ATTENDANCE
 
 	tmpBuf := make([]byte, totalSize)
@@ -469,7 +469,7 @@ func (chatroominfo *ChatRoom) Decoding(bodyData []byte) {
 	chatroominfo.NUM_ATTENDANCE, _ = reader.ReadS16()
 }
 
-func (viewAvailableChatRoomRes *ViewAvailableChatRoomResPacket) Encoding() ([]byte, int16) {
+func (viewAvailableChatRoomRes *ViewAvailableChatRoomResPacket) EncodingPacket() ([]byte, int16) {
 	totalSize := _packetHeaderSize + BYTE_OF_ERROR_CODE + BYTE_OF_CHATROOM_ID + viewAvailableChatRoomRes.Len*(BYTE_OF_CHATROOM_ID+MAX_CHAT_TIME_BYTE_LENGTH+MAX_USER_NAME_BYTE_LENGTH+MAX_CHAT_NAME_BYTE_LENGTH+BYTE_OF_NUM_ATTENDANCE)
 
 	sendBuf := make([]byte, totalSize)
@@ -480,7 +480,7 @@ func (viewAvailableChatRoomRes *ViewAvailableChatRoomResPacket) Encoding() ([]by
 	writer.WriteS16(viewAvailableChatRoomRes.Len)
 	var i int16
 	for i = 0; i < viewAvailableChatRoomRes.Len; i++ {
-		writer.WriteBytes(viewAvailableChatRoomRes.ChatRooms[i].Encoding())
+		writer.WriteBytes(viewAvailableChatRoomRes.ChatRooms[i].EncodingPacket())
 	}
 
 	return sendBuf, totalSize
@@ -516,20 +516,106 @@ func (viewAvailableChatRoomRes *ViewAvailableChatRoomResPacket) Decoding(bodyDat
 	return true
 }
 
+/*
+type ConnAvailableChatRoomReqPacket struct {
+	UserID     []byte
+	ChatRoomID int16
+}
+
+type ConnAvailableChatRoomResPacket struct {
+	ErrorCode  int16
+	ChatRoomID int16
+}
+*/
+
+func (ConnAvailableChatRoomReq *ConnAvailableChatRoomReqPacket) EncodingPacket() ([]byte, int16) {
+	totalSize := _packetHeaderSize + MAX_USER_ID_BYTE_LENGTH + BYTE_OF_CHATROOM_ID
+
+	sendBuf := make([]byte, totalSize)
+	writer := network.MakeWrite(sendBuf, true)
+
+	EncodingPacketHeader(&writer, totalSize, PACKET_CONN_AVAILABLE_CHATROOM_REQ, 0)
+	writer.WriteBytes(ConnAvailableChatRoomReq.UserID)
+	writer.WriteS16(int16(ConnAvailableChatRoomReq.ChatRoomID))
+
+	return sendBuf, totalSize
+}
+
+func (connAvailableChatRoomReq *ConnAvailableChatRoomReqPacket) Decoding(bodyData []byte) bool {
+	totalSize := MAX_USER_ID_BYTE_LENGTH + BYTE_OF_CHATROOM_ID
+
+	if len(bodyData) != totalSize {
+		return false
+	}
+
+	reader := network.MakeReader(bodyData, true)
+
+	var err error
+	connAvailableChatRoomReq.UserID, err = reader.ReadBytes(MAX_USER_ID_BYTE_LENGTH)
+	if err != nil {
+		return false
+	}
+	err = nil
+	connAvailableChatRoomReq.ChatRoomID, err = reader.ReadS16()
+
+	return err == nil
+}
+
+func (ConnAvailableChatRoomRes *ConnAvailableChatRoomResPacket) EncodingPacket() ([]byte, int16) {
+	totalSize := _packetHeaderSize + BYTE_OF_ERROR_CODE + BYTE_OF_CHATROOM_ID
+
+	sendBuf := make([]byte, totalSize)
+	writer := network.MakeWrite(sendBuf, true)
+
+	EncodingPacketHeader(&writer, totalSize, PACKET_CONN_AVAILABLE_CHATROOM_RES, 0)
+	writer.WriteS16(ConnAvailableChatRoomRes.ErrorCode)
+	writer.WriteS16(ConnAvailableChatRoomRes.ChatRoomID)
+
+	return sendBuf, totalSize
+}
+
+func (connAvailableChatRoomRes *ConnAvailableChatRoomResPacket) Decoding(bodyData []byte) bool {
+	totalSize := BYTE_OF_ERROR_CODE + BYTE_OF_CHATROOM_ID
+
+	if len(bodyData) != totalSize {
+		return false
+	}
+
+	reader := network.MakeReader(bodyData, true)
+
+	var err error
+	connAvailableChatRoomRes.ErrorCode, err = reader.ReadS16()
+	if err != nil {
+		fmt.Println(connAvailableChatRoomRes.ChatRoomID)
+		fmt.Println("ConnAvailableChatRoomRes Decoding Fail")
+		return false
+	}
+
+	connAvailableChatRoomRes.ChatRoomID, err = reader.ReadS16()
+	if err != nil {
+		fmt.Println(connAvailableChatRoomRes.ChatRoomID)
+		fmt.Println("ConnAvailableChatRoomRes Decoding Fail")
+		return false
+	}
+
+	return true
+}
+
 func (RenewChatLogReq *RenewChatLogReqPacket) EncodingPacket() ([]byte, int16) {
-	totalSize := _packetHeaderSize + BYTE_OF_MESSAGE_SEQUENCE
+	totalSize := _packetHeaderSize + BYTE_OF_MESSAGE_SEQUENCE + BYTE_OF_CHATROOM_ID
 
 	sendBuf := make([]byte, totalSize)
 	writer := network.MakeWrite(sendBuf, true)
 
 	EncodingPacketHeader(&writer, totalSize, PACKET_RENEW_CHATLOG_REQ, 0)
 	writer.WriteS32(RenewChatLogReq.ChatLogEndSequence)
+	writer.WriteS16(RenewChatLogReq.ChatRoomID)
 
 	return sendBuf, totalSize
 }
 
 func (RenewChatLogReq *RenewChatLogReqPacket) Decoding(bodyData []byte) bool {
-	totalSize := BYTE_OF_MESSAGE_SEQUENCE
+	totalSize := BYTE_OF_MESSAGE_SEQUENCE + BYTE_OF_CHATROOM_ID
 
 	if len(bodyData) != totalSize {
 		return false
@@ -543,27 +629,34 @@ func (RenewChatLogReq *RenewChatLogReqPacket) Decoding(bodyData []byte) bool {
 		fmt.Println("RenewChatLogReq Reading Err")
 		return false
 	}
+	RenewChatLogReq.ChatRoomID, err = reader.ReadS16()
+	if err != nil {
+		fmt.Println("RenewChatLogReq Reading Err")
+		return false
+	}
 
 	return true
 }
 
 func (RenewChatLogRes *RenewChatLogResPacket) EncodingPacket() ([]byte, int16) {
-	totalSize := _packetHeaderSize + BYTE_OF_ERROR_CODE + BYTE_OF_MESSAGE_SEQUENCE + MAX_CHAT_MESSAGE_BYTE_LENGTH + MAX_CHAT_TIME_BYTE_LENGTH + MAX_USER_NAME_BYTE_LENGTH
+	totalSize := _packetHeaderSize + BYTE_OF_ERROR_CODE + BYTE_OF_MESSAGE_SEQUENCE + MAX_CHAT_MESSAGE_BYTE_LENGTH + MAX_CHAT_TIME_BYTE_LENGTH + MAX_USER_NAME_BYTE_LENGTH + BYTE_OF_CHATROOM_ID
 
 	sendBuf := make([]byte, totalSize)
 	writer := network.MakeWrite(sendBuf, true)
 	EncodingPacketHeader(&writer, totalSize, PACKET_RENEW_CHATLOG_RES, 0)
 
+	writer.WriteS16(RenewChatLogRes.ErrorCode)
 	writer.WriteS32(RenewChatLogRes.MessageSequence)
 	writer.WriteBytes(RenewChatLogRes.Message)
 	writer.WriteBytes(RenewChatLogRes.TimeChat)
 	writer.WriteBytes(RenewChatLogRes.UserName)
+	writer.WriteS16(RenewChatLogRes.ChatRoomID)
 
 	return sendBuf, totalSize
 }
 
 func (RenewChatLogRes *RenewChatLogResPacket) Decoding(bodyData []byte) bool {
-	bodySize := BYTE_OF_ERROR_CODE + BYTE_OF_MESSAGE_SEQUENCE + MAX_CHAT_MESSAGE_BYTE_LENGTH + MAX_CHAT_TIME_BYTE_LENGTH + MAX_USER_NAME_BYTE_LENGTH
+	bodySize := BYTE_OF_ERROR_CODE + BYTE_OF_MESSAGE_SEQUENCE + MAX_CHAT_MESSAGE_BYTE_LENGTH + MAX_CHAT_TIME_BYTE_LENGTH + MAX_USER_NAME_BYTE_LENGTH + BYTE_OF_CHATROOM_ID
 
 	if len(bodyData) != bodySize {
 		return false
@@ -573,27 +666,32 @@ func (RenewChatLogRes *RenewChatLogResPacket) Decoding(bodyData []byte) bool {
 	var err error
 	RenewChatLogRes.ErrorCode, err = reader.ReadS16()
 	if err != nil {
-		fmt.Println("RenewChatLogRes Reading Err", err)
+		fmt.Println("RenewChatLogRes Reading ErrorCodew Err", err)
 		return false
 	}
 	RenewChatLogRes.MessageSequence, err = reader.ReadS32()
 	if err != nil {
-		fmt.Println("RenewChatLogRes Reading Err", err)
+		fmt.Println("RenewChatLogRes Reading MessageSequence Err", err)
 		return false
 	}
 	RenewChatLogRes.Message, err = reader.ReadBytes(MAX_CHAT_MESSAGE_BYTE_LENGTH)
 	if err != nil {
-		fmt.Println("RenewChatLogRes Reading Err", err)
+		fmt.Println("RenewChatLogRes Reading Message Err", err)
 		return false
 	}
 	RenewChatLogRes.TimeChat, err = reader.ReadBytes(MAX_CHAT_TIME_BYTE_LENGTH)
 	if err != nil {
-		fmt.Println("RenewChatLogRes Reading Err", err)
+		fmt.Println("RenewChatLogRes Reading TimeChat Err", err)
 		return false
 	}
 	RenewChatLogRes.UserName, err = reader.ReadBytes(MAX_USER_NAME_BYTE_LENGTH)
 	if err != nil {
-		fmt.Println("RenewChatLogRes Reading Err", err)
+		fmt.Println("RenewChatLogRes Reading UserName Err", err)
+		return false
+	}
+	RenewChatLogRes.ChatRoomID, err = reader.ReadS16()
+	if err != nil {
+		fmt.Println("RenewChatLogRes Reading ChatRoomID Err", err)
 		return false
 	}
 

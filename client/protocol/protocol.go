@@ -75,9 +75,15 @@ type ViewAvailableChatRoomResPacket struct {
 	ChatRooms []ChatRoom
 }
 
-/*
+type ConnAvailableChatRoomReqPacket struct {
+	UserID     []byte
+	ChatRoomID int16
+}
 
- */
+type ConnAvailableChatRoomResPacket struct {
+	ErrorCode  int16
+	ChatRoomID int16
+}
 
 type ViewUserJoinChatRoomReqPacket struct {
 	UserID []byte
@@ -106,6 +112,7 @@ type BroadcastMessagePacket struct {
 
 type RenewChatLogReqPacket struct {
 	ChatLogEndSequence int32
+	ChatRoomID         int16
 } // 재접속 또는 신규접속 시 채팅로그를 갱신하기 위한 요청 패킷
 
 type RenewChatLogResPacket struct {
@@ -114,4 +121,5 @@ type RenewChatLogResPacket struct {
 	Message         []byte
 	TimeChat        []byte
 	UserName        []byte
+	ChatRoomID      int16
 } // 상기 패킷에 대한 응답 패킷
